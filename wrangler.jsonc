@@ -164,7 +164,7 @@
             "version": "1.0.0"
         },
         "CUSTOM_DOMAIN": "viber.blackgatepen.ai",
-        "MAX_SANDBOX_INSTANCES": "10",
+        "MAX_SANDBOX_INSTANCES": "15",
         "SANDBOX_INSTANCE_TYPE": "standard-4"        
     },
 	"workers_dev": false,
