@@ -114,7 +114,6 @@ const MODELS_MASTER = {
             contextSize: 1048576, // 1M Context
         }
     },
-
     // --- Anthropic Models ---
     CLAUDE_3_7_SONNET_20250219: {
         id: 'anthropic/claude-3-7-sonnet-20250219',
@@ -166,26 +165,35 @@ const MODELS_MASTER = {
             contextSize: 200000, // 200K Context
         }
     },
-
     // --- OpenAI Models ---
-    OPENAI_5: {
-        id: 'openai/gpt-5',
+    OPENAI_5_3_CODEX: {
+        id: 'openai/gpt-5.3-codex',
         config: {
-            name: 'GPT-5',
-            size: ModelSize.LARGE,
+            name: 'GPT-5.3 Codex',
+            size: ModelSize.SPECIALIZED,
             provider: 'openai',
-            creditCost: 5, // $1.25
-            contextSize: 400000, // 400K Context
+            creditCost: 10,
+            contextSize: 400000,
         }
     },
-    OPENAI_5_1: {
-        id: 'openai/gpt-5.1',
+    OPENAI_5_2_PRO: {
+        id: 'openai/gpt-5.2-pro',
         config: {
-            name: 'GPT-5.1',
+            name: 'GPT-5.2 Pro',
             size: ModelSize.LARGE,
             provider: 'openai',
-            creditCost: 5, // $1.25
-            contextSize: 400000, // 400K Context
+            creditCost: 9,
+            contextSize: 400000,
+        }
+    },
+    OPENAI_5_2_CODEX: {
+        id: 'openai/gpt-5.2-codex',
+        config: {
+            name: 'GPT-5.2 Codex',
+            size: ModelSize.SPECIALIZED,
+            provider: 'openai',
+            creditCost: 7,
+            contextSize: 400000,
         }
     },
     OPENAI_5_2: {
@@ -194,8 +202,38 @@ const MODELS_MASTER = {
             name: 'GPT-5.2',
             size: ModelSize.LARGE,
             provider: 'openai',
-            creditCost: 7, // $1.75
-            contextSize: 400000, // 400K Context
+            creditCost: 5,
+            contextSize: 400000,
+        }
+    },
+    OPENAI_5_PRO: {
+        id: 'openai/gpt-5-pro',
+        config: {
+            name: 'GPT-5 Pro',
+            size: ModelSize.LARGE,
+            provider: 'openai',
+            creditCost: 8,
+            contextSize: 400000,
+        }
+    },
+    OPENAI_5_CODEX: {
+        id: 'openai/gpt-5-codex',
+        config: {
+            name: 'GPT-5 Codex',
+            size: ModelSize.SPECIALIZED,
+            provider: 'openai',
+            creditCost: 6,
+            contextSize: 400000,
+        }
+    },
+    OPENAI_5: {
+        id: 'openai/gpt-5',
+        config: {
+            name: 'GPT-5',
+            size: ModelSize.LARGE,
+            provider: 'openai',
+            creditCost: 4,
+            contextSize: 400000,
         }
     },
     OPENAI_5_MINI: {
@@ -204,64 +242,40 @@ const MODELS_MASTER = {
             name: 'GPT-5 Mini',
             size: ModelSize.LITE,
             provider: 'openai',
-            creditCost: 1, // $0.25 (BASELINE)
-            contextSize: 400000, // 400K Context
+            creditCost: 2,
+            contextSize: 400000,
         }
     },
-    // Below configs are commented for now, may be supported in the future
-    OPENAI_OSS: {
+    OPENAI_5_NANO: {
+        id: 'openai/gpt-5-nano',
+        config: {
+            name: 'GPT-5 Nano',
+            size: ModelSize.MICRO,
+            provider: 'openai',
+            creditCost: 1,
+            contextSize: 200000,
+        }
+    },
+    OPENAI_OSS_120B: {
         id: 'openai/gpt-oss-120b',
         config: {
-            name: 'GPT-OSS 120b',
-            size: ModelSize.LITE,
-            provider: 'openai',
-            creditCost: 0.4,
-            contextSize: 131072, // 128K Context
-        }
-    },
-    OPENAI_5_1_CODEX_MINI: {
-        id: 'openai/gpt-5.1-codex-mini',
-        config: {
-            name: 'GPT-5.1 Codex Mini',
-            size: ModelSize.LITE,
-            provider: 'openai',
-            creditCost: 1, // ~$0.25
-            contextSize: 400000, // 400K Context
-        }
-    },
-    OPENAI_5_1_CODEX: {
-        id: 'openai/gpt-5.1-codex',
-        config: {
-            name: 'GPT-5.1 Codex',
+            name: 'GPT-OSS 120B',
             size: ModelSize.LARGE,
             provider: 'openai',
-            creditCost: 5, // ~$1.25
-            contextSize: 400000, // 400K Context
+            creditCost: 3,
+            contextSize: 200000,
         }
     },
-
-    // // --- Cerebras Models ---
-    // CEREBRAS_GPT_OSS: {
-    //     id: 'cerebras/gpt-oss-120b',
-    //     config: {
-    //         name: 'Cerebras GPT-OSS',
-    //         size: ModelSize.LITE,
-    //         provider: 'Cerebras',
-    //         creditCost: 0.4, // $0.25
-    //         contextSize: 131072, // 128K Context
-    //     }
-    // },
-    // CEREBRAS_QWEN_3_CODER: {
-    //     id: 'cerebras/qwen-3-coder-480b',
-    //     config: {
-    //         name: 'Qwen 3 Coder',
-    //         size: ModelSize.REGULAR,
-    //         provider: 'cerebras',
-    //         creditCost: 4, // Est ~$1.00 for 480B param
-    //         contextSize: 32768,
-    //     }
-    // },
-
+    OPENAI_OSS_20B: {
+        id: 'openai/gpt-oss-20b',
+        config: {
+            name: 'GPT-OSS 20B',
+            size: ModelSize.LITE,
+            provider: 'openai',
+            creditCost: 1,
+            contextSize: 128000,
+        }
+    },
     // --- Grok Models ---
     GROK_CODE_FAST_1: {
         id: 'grok/grok-code-fast-1',
@@ -339,7 +353,6 @@ const MODELS_MASTER = {
         },
     }
 } as const;
-
 /**
  * Generated AIModels object
  */
