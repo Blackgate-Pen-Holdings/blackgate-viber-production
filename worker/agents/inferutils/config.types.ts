@@ -170,7 +170,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5.3-codex',
         config: {
             name: 'GPT-5.3 Codex',
-            size: ModelSize.SPECIALIZED,
+            size: ModelSize.LARGE,
             provider: 'openai',
             creditCost: 10,
             contextSize: 400000,
@@ -190,7 +190,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5.2-codex',
         config: {
             name: 'GPT-5.2 Codex',
-            size: ModelSize.SPECIALIZED,
+            size: ModelSize.LARGE,
             provider: 'openai',
             creditCost: 7,
             contextSize: 400000,
@@ -200,7 +200,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5.2',
         config: {
             name: 'GPT-5.2',
-            size: ModelSize.LARGE,
+            size: ModelSize.REGULAR,
             provider: 'openai',
             creditCost: 5,
             contextSize: 400000,
@@ -220,7 +220,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5-codex',
         config: {
             name: 'GPT-5 Codex',
-            size: ModelSize.SPECIALIZED,
+            size: ModelSize.LARGE,
             provider: 'openai',
             creditCost: 6,
             contextSize: 400000,
@@ -250,7 +250,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5-nano',
         config: {
             name: 'GPT-5 Nano',
-            size: ModelSize.MICRO,
+            size: ModelSize.SMALL,
             provider: 'openai',
             creditCost: 1,
             contextSize: 200000,
