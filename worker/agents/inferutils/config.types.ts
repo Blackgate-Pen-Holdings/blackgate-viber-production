@@ -250,7 +250,7 @@ const MODELS_MASTER = {
         id: 'openai/gpt-5-nano',
         config: {
             name: 'GPT-5 Nano',
-            size: ModelSize.SMALL,
+            size: ModelSize.REGULAR,
             provider: 'openai',
             creditCost: 1,
             contextSize: 200000,
