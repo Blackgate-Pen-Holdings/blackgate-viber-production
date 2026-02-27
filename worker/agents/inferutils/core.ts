@@ -197,8 +197,10 @@ export async function buildGatewayUrl(
 
     // Build the url via bindings
     const gateway = env.AI.gateway(env.CLOUDFLARE_AI_GATEWAY);
-    const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${ await gateway.getUrl() } compat`;
-    return baseUrl;
+    // const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${ await gateway.getUrl() } compat`;
+    const rawUrl = await gateway.getUrl();
+    const baseUrl = new URL(rawUrl);
+    return constructGatewayUrl(baseUrl, providerOverride);
 }
 
 function isValidApiKey(apiKey: string): boolean {
