@@ -1,5 +1,9 @@
-import { OpenAI } from 'openai';
+import OpenAI from 'openai';
 import { Stream } from 'openai/streaming';
+import type {
+    ResponseCreateParamsNonStreaming,
+    ResponseCreateParamsStreaming,
+} from 'openai/resources/responses/responses';
 import { z } from 'zod';
 import {
     type SchemaFormat,
@@ -14,7 +18,14 @@ import {
 } from 'openai/resources.mjs';
 import { CompletionSignal, Message, MessageContent, MessageRole } from './common';
 import { ToolCallResult, ToolDefinition, toOpenAITool } from '../tools/types';
-import { AgentActionKey, AI_MODEL_CONFIG, AIModelConfig, AIModels, InferenceMetadata, type InferenceRuntimeOverrides } from './config.types';
+import {
+    AgentActionKey,
+    AI_MODEL_CONFIG,
+    AIModelConfig,
+    AIModels,
+    InferenceMetadata,
+    type InferenceRuntimeOverrides,
+} from './config.types';
 import { RateLimitService } from '../../services/rate-limit/rateLimits';
 import { getUserConfigurableSettings } from '../../config';
 import { SecurityError, RateLimitExceededError } from 'shared/types/errors';
@@ -40,7 +51,7 @@ function optimizeInputs(messages: Message[]): Message[] {
 type ToolAccumulatorEntry = ChatCompletionMessageFunctionToolCall & { __order: number };
 
 function synthId(): string {
-    return `tool_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    return `tool_${ Date.now() }_${ Math.random().toString(36).slice(2) } `;
 }
 
 function ensureToolEntry(
@@ -141,7 +152,7 @@ function optimizeTextContent(content: string): string {
 }
 
 function buildGatewayPathname(cleanPathname: string, providerOverride?: AIGatewayProviders): string {
-    return providerOverride ? `${cleanPathname}/${providerOverride}` : `${cleanPathname}/compat`;
+    return providerOverride ? `${ cleanPathname } /${providerOverride}` : `${cleanPathname}/compat`;
 }
 
 function constructGatewayUrl(url: URL, providerOverride?: AIGatewayProviders): string {
@@ -162,10 +173,11 @@ export async function buildGatewayUrl(
     }
 
     // If CLOUDFLARE_AI_GATEWAY_URL is set and is a valid URL, use it directly
-    if (env.CLOUDFLARE_AI_GATEWAY_URL &&
+    if (
+        env.CLOUDFLARE_AI_GATEWAY_URL &&
         env.CLOUDFLARE_AI_GATEWAY_URL !== 'none' &&
-        env.CLOUDFLARE_AI_GATEWAY_URL.trim() !== '') {
-
+        env.CLOUDFLARE_AI_GATEWAY_URL.trim() !== ''
+    ) {
         try {
             const url = new URL(env.CLOUDFLARE_AI_GATEWAY_URL);
             // Validate it's actually an HTTP/HTTPS URL
@@ -177,13 +189,15 @@ export async function buildGatewayUrl(
             }
         } catch (_error) {
             // Invalid URL, fall through to use bindings
-            console.warn(`Invalid CLOUDFLARE_AI_GATEWAY_URL provided: ${env.CLOUDFLARE_AI_GATEWAY_URL}. Falling back to AI bindings.`);
+            console.warn(
+                `Invalid CLOUDFLARE_AI_GATEWAY_URL provided: ${ env.CLOUDFLARE_AI_GATEWAY_URL }. Falling back to AI bindings.`,
+            );
         }
     }
 
     // Build the url via bindings
     const gateway = env.AI.gateway(env.CLOUDFLARE_AI_GATEWAY);
-    const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${await gateway.getUrl()}compat`;
+    const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${ await gateway.getUrl() } compat`;
     return baseUrl;
 }
 
@@ -192,7 +206,11 @@ function isValidApiKey(apiKey: string): boolean {
         return false;
     }
     // Check if value is not 'default' or 'none' and is more than 10 characters long
-    if (apiKey.trim().toLowerCase() === 'default' || apiKey.trim().toLowerCase() === 'none' || apiKey.trim().length < 10) {
+    if (
+        apiKey.trim().toLowerCase() === 'default' ||
+        apiKey.trim().toLowerCase() === 'none' ||
+        apiKey.trim().length < 10
+    ) {
         return false;
     }
     return true;
@@ -204,7 +222,7 @@ async function getApiKey(
     _userId: string,
     runtimeOverrides?: InferenceRuntimeOverrides,
 ): Promise<string> {
-    console.log("Getting API key for provider: ", provider);
+    console.log('Getting API key for provider: ', provider);
 
     const runtimeKey = runtimeOverrides?.userApiKeys?.[provider];
     if (runtimeKey && isValidApiKey(runtimeKey)) {
@@ -212,7 +230,7 @@ async function getApiKey(
     }
     // Fallback to environment variables
     const providerKeyString = provider.toUpperCase().replaceAll('-', '_');
-    const envKey = `${providerKeyString}_API_KEY` as keyof Env;
+    const envKey = `${ providerKeyString } _API_KEY` as keyof Env;
     let apiKey: string = env[envKey] as string;
 
     // Check if apiKey is empty or undefined and is valid
@@ -235,9 +253,9 @@ export async function getConfigurationForModel(
     userId: string,
     runtimeOverrides?: InferenceRuntimeOverrides,
 ): Promise<{
-    baseURL: string,
-    apiKey: string,
-    defaultHeaders?: Record<string, string>,
+    baseURL: string;
+    apiKey: string;
+    defaultHeaders?: Record<string, string>;
 }> {
     let providerForcedOverride: AIGatewayProviders | undefined;
     if (modelConfig.directOverride) {
@@ -274,19 +292,22 @@ export async function getConfigurationForModel(
 
     const gatewayToken = isUsingCustomGateway
         ? gatewayOverride?.token
-        : (gatewayOverride?.token ?? env.CLOUDFLARE_AI_GATEWAY_TOKEN);  // Platform gateway
+        : gatewayOverride?.token ?? env.CLOUDFLARE_AI_GATEWAY_TOKEN;
 
     // Try to find API key of type <PROVIDER>_API_KEY else default to gateway token
     const apiKey = await getApiKey(modelConfig.provider, env, userId, runtimeOverrides);
 
     // AI Gateway wholesaling: when using BYOK provider key + platform gateway token
-    const defaultHeaders = gatewayToken && apiKey !== gatewayToken ? {
-        'cf-aig-authorization': `Bearer ${gatewayToken}`,
-    } : undefined;
+    const defaultHeaders =
+        gatewayToken && apiKey !== gatewayToken
+            ? {
+                'cf-aig-authorization': `Bearer ${ gatewayToken } `,
+            }
+            : undefined;
     return {
         baseURL,
         apiKey,
-        defaultHeaders
+        defaultHeaders,
     };
 }
 
@@ -349,18 +370,18 @@ export function serializeCallChain(context: ToolCallContext, finalResponse: stri
             content = (content || '').slice(0, 100);
         }
 
-        transcript += `<message role="${message.role}">${content}</message>`;
+        transcript += `< message role = "${message.role}" > ${ content } </message>`;
     }
-    transcript += `<final_response>${finalResponse || '**cancelled**'}</final_response>`;
-    transcript += '</call_chain_transcript>';
-    return transcript;
+transcript += `<final_response>${finalResponse || '**cancelled**'}</final_response>`;
+transcript += '</call_chain_transcript>';
+return transcript;
 }
 
 export class InferError extends Error {
     constructor(
         message: string,
         public response: string,
-        public toolCallContext?: ToolCallContext
+        public toolCallContext?: ToolCallContext,
     ) {
         super(message);
         this.name = 'InferError';
@@ -376,7 +397,7 @@ export class InferError extends Error {
     partialResponse(): InferResponseString {
         return {
             string: this.response,
-            toolCallContext: this.toolCallContext
+            toolCallContext: this.toolCallContext,
         };
     }
 }
@@ -408,7 +429,10 @@ export type InferResponseString = {
 /**
  * Execute all tool calls from OpenAI response
  */
-async function executeToolCalls(openAiToolCalls: ChatCompletionMessageFunctionToolCall[], originalDefinitions: ToolDefinition[]): Promise<ToolCallResult[]> {
+async function executeToolCalls(
+    openAiToolCalls: ChatCompletionMessageFunctionToolCall[],
+    originalDefinitions: ToolDefinition[],
+): Promise<ToolCallResult[]> {
     // Use dependency-aware execution engine
     return executeToolCallsWithDependencies(openAiToolCalls, originalDefinitions);
 }
@@ -417,15 +441,15 @@ function updateToolCallContext(
     toolCallContext: ToolCallContext | undefined,
     assistantMessage: Message,
     executedToolCalls: ToolCallResult[],
-    completionDetector?: CompletionDetector
+    completionDetector?: CompletionDetector,
 ) {
     const newMessages = [
         ...(toolCallContext?.messages || []),
         assistantMessage,
         ...executedToolCalls
-            .filter(result => result.name && result.name.trim() !== '')
+            .filter((result) => result.name && result.name.trim() !== '')
             .map((result, _) => ({
-                role: "tool" as MessageRole,
+                role: 'tool' as MessageRole,
                 content: result.result ? JSON.stringify(result.result) : 'done',
                 name: result.name,
                 tool_call_id: result.id,
@@ -444,7 +468,7 @@ function updateToolCallContext(
         messages: newMessages,
         depth: newDepth,
         completionSignal,
-        warningInjected: toolCallContext?.warningInjected || false
+        warningInjected: toolCallContext?.warningInjected || false,
     };
     return newToolCallContext;
 }
@@ -466,54 +490,69 @@ export function infer<OutputSchema extends z.AnyZodObject>(
  * This uses the response_format.schema parameter to ensure the model returns
  * a response that matches the provided schema.
  */
-export async function infer<OutputSchema extends z.AnyZodObject>({
-    env,
-    metadata,
-    messages,
-    schema,
-    schemaName,
-    actionKey,
-    format,
-    formatOptions,
-    modelName,
-    reasoning_effort,
-    temperature,
-    frequency_penalty,
-    maxTokens,
-    stream,
-    tools,
-    runtimeOverrides,
-    abortSignal,
-    onAssistantMessage,
-    completionConfig,
-}: InferArgsBase & {
-    schema?: OutputSchema;
-    schemaName?: string;
-    format?: SchemaFormat;
-    formatOptions?: FormatterOptions;
-}, toolCallContext?: ToolCallContext): Promise<InferResponseObject<OutputSchema> | InferResponseString> {
+export async function infer<OutputSchema extends z.AnyZodObject>(
+    {
+        env,
+        metadata,
+        messages,
+        schema,
+        schemaName,
+        actionKey,
+        format,
+        formatOptions,
+        modelName,
+        reasoning_effort,
+        temperature,
+        frequency_penalty,
+        maxTokens,
+        stream,
+        tools,
+        runtimeOverrides,
+        abortSignal,
+        onAssistantMessage,
+        completionConfig,
+    }: InferArgsBase & {
+        schema?: OutputSchema;
+        schemaName?: string;
+        format?: SchemaFormat;
+        formatOptions?: FormatterOptions;
+    },
+    toolCallContext?: ToolCallContext,
+): Promise<InferResponseObject<OutputSchema> | InferResponseString> {
     if (messages.length > MAX_LLM_MESSAGES) {
-        throw new RateLimitExceededError(`Message limit exceeded: ${messages.length} messages (max: ${MAX_LLM_MESSAGES}). Please use context compactification.`, RateLimitType.LLM_CALLS);
+        throw new RateLimitExceededError(
+            `Message limit exceeded: ${messages.length} messages (max: ${MAX_LLM_MESSAGES}). Please use context compactification.`,
+            RateLimitType.LLM_CALLS,
+        );
     }
 
     // Check tool calling depth to prevent infinite recursion
     const currentDepth = toolCallContext?.depth ?? 0;
     if (currentDepth >= getMaxToolCallingDepth(actionKey)) {
-        console.warn(`Tool calling depth limit reached (${currentDepth}/${getMaxToolCallingDepth(actionKey)}). Stopping recursion.`);
+        console.warn(
+            `Tool calling depth limit reached (${currentDepth}/${getMaxToolCallingDepth(actionKey)}). Stopping recursion.`,
+        );
         // Return a response indicating max depth reached
         if (schema) {
-            throw new AbortError(`Maximum tool calling depth (${getMaxToolCallingDepth(actionKey)}) exceeded. Tools may be calling each other recursively.`, toolCallContext);
+            throw new AbortError(
+                `Maximum tool calling depth (${getMaxToolCallingDepth(actionKey)}) exceeded. Tools may be calling each other recursively.`,
+                toolCallContext,
+            );
         }
         return {
             string: `[System: Maximum tool calling depth reached.]`,
-            toolCallContext
+            toolCallContext,
         };
     }
 
     try {
         const userConfig = await getUserConfigurableSettings(env, metadata.userId);
-        // Maybe in the future can expand using config object for other stuff like global model configs?
-        await RateLimitService.enforceLLMCallsRateLimit(env, userConfig.security.rateLimit, metadata.userId, modelName);
+        await RateLimitService.enforceLLMCallsRateLimit(
+            env,
+            userConfig.security.rateLimit,
+            metadata.userId,
+            modelName,
+        );
         const modelConfig = AI_MODEL_CONFIG[modelName as AIModels];
 
         const { apiKey, baseURL, defaultHeaders } = await getConfigurationForModel(
@@ -534,28 +573,32 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
                 ? { response_format: zodResponseFormat(schema, schemaName) }
                 : {};
 
-        const extraBody = modelName.includes('claude') ? {
-            extra_body: {
-                thinking: {
-                    type: 'enabled',
-                    budget_tokens: claude_thinking_budget_tokens[reasoning_effort ?? 'medium'],
+        const extraBody = modelName.includes('claude')
+            ? {
+                extra_body: {
+                    thinking: {
+                        type: 'enabled',
+                        budget_tokens: claude_thinking_budget_tokens[reasoning_effort ?? 'medium'],
+                    },
                 },
-            },
-        } : {};
+            }
+            : {};
 
         // Optimize messages to reduce token count
         const optimizedMessages = optimizeInputs(messages);
-        console.log(`Token optimization: Original messages size ~${JSON.stringify(messages).length} chars, optimized size ~${JSON.stringify(optimizedMessages).length} chars`);
+        console.log(
+            `Token optimization: Original messages size ~${JSON.stringify(messages).length} chars, optimized size ~${JSON.stringify(optimizedMessages).length} chars`,
+        );
 
         let messagesToPass = [...optimizedMessages];
         if (toolCallContext && toolCallContext.messages) {
             const ctxMessages = toolCallContext.messages;
             let validToolCallIds = new Set<string>();
 
-            let filtered = ctxMessages.filter(msg => {
+            let filtered = ctxMessages.filter((msg) => {
                 // Update valid IDs when we see assistant with tool_calls
                 if (msg.role === 'assistant' && msg.tool_calls) {
-                    validToolCallIds = new Set(msg.tool_calls.map(tc => tc.id));
+                    validToolCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
                     return true;
                 }
 
@@ -575,9 +618,9 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
             });
 
             // Remove empty tool call arrays from assistant messages
-            filtered = filtered.map(msg => {
+            filtered = filtered.map((msg) => {
                 if (msg.role === 'assistant' && msg.tool_calls) {
-                    msg.tool_calls = msg.tool_calls.filter(tc => tc.id);
+                    msg.tool_calls = msg.tool_calls.filter((tc) => tc.id);
                     if (msg.tool_calls.length === 0) {
                         msg.tool_calls = undefined;
                     }
@@ -592,11 +635,7 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
             if (!schema || !schemaName) {
                 throw new Error('Schema and schemaName are required when using a custom format');
             }
-            const formatInstructions = generateTemplateForSchema(
-                schema,
-                format,
-                formatOptions,
-            );
+            const formatInstructions = generateTemplateForSchema(schema, format, formatOptions);
             const lastMessage = messagesToPass[messagesToPass.length - 1];
 
             // Handle multi-modal content properly
@@ -630,50 +669,74 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
             }
         }
 
-        console.log(`Running inference with ${modelName} using structured output with ${format} format, reasoning effort: ${reasoning_effort}, max tokens: ${maxTokens}, temperature: ${temperature}, frequency_penalty: ${frequency_penalty}, baseURL: ${baseURL}`);
+        console.log(
+            `Running inference with ${modelName} using structured output with ${format} format, reasoning effort: ${reasoning_effort}, max tokens: ${maxTokens}, temperature: ${temperature}, frequency_penalty: ${frequency_penalty}, baseURL: ${baseURL}`,
+        );
 
-        const toolsOpts = tools ? {
-            tools: tools.map(t => {
-                return toOpenAITool(t);
-            }),
-            tool_choice: 'auto' as const
-        } : {};
+        const toolsOpts = tools
+            ? {
+                tools: tools.map((t) => toOpenAITool(t)),
+                tool_choice: 'auto' as const,
+            }
+            : {};
 
         // Responses API: either a non-stream response object, or a Stream of response events.
         let response: any | Stream<any>;
-
         try {
-            response = await client.responses.create({
+            const requestOptions = {
+                signal: abortSignal,
+                headers: {
+                    'cf-aig-metadata': JSON.stringify({
+                        chatId: metadata.agentId,
+                        userId: metadata.userId,
+                        schemaName,
+                        actionKey,
+                    }),
+                },
+            };
+
+            // IMPORTANT: do NOT put `stream` into this base object.
+            // We'll add it ONLY in the explicitly typed params objects below
+            // to satisfy openai@5.x overload resolution.
+            const baseParams = {
                 ...schemaObj,
                 ...extraBody,
                 ...toolsOpts,
                 model: modelName,
-                // Responses API uses `input` instead of `messages`.
-                // The OpenAI SDK accepts chat-style messages as input items.
                 input: messagesToPass as any,
-                // Responses naming
                 max_output_tokens: maxTokens || 150000,
-                stream: !!stream,
-                reasoning_effort: modelConfig.nonReasoning ? undefined : reasoning_effort,
                 temperature,
                 frequency_penalty,
-                // <<— request-specific fetch options go here
-                requestOptions: {
-                    signal: abortSignal,
-                    headers: {
-                        'cf-aig-metadata': JSON.stringify({
-                            chatId: metadata.agentId,
-                            userId: metadata.userId,
-                            schemaName,
-                            actionKey,
-                        }),
-                    },
-                },
-            });
+
+                // Responses API uses `reasoning: { effort: ... }`
+                ...(modelConfig.nonReasoning || !reasoning_effort
+                    ? {}
+                    : { reasoning: { effort: reasoning_effort } }),
+            };
+
+            if (stream) {
+                const params: ResponseCreateParamsStreaming = {
+                    ...(baseParams as any),
+                    stream: true,
+                };
+                response = await client.responses.create(params, requestOptions);
+            } else {
+                const params: ResponseCreateParamsNonStreaming = {
+                    ...(baseParams as any),
+                    stream: false,
+                };
+                response = await client.responses.create(params, requestOptions);
+            }
+
             console.log(`Inference response received`);
         } catch (error) {
             // Check if error is due to abort
-            if (error instanceof Error && (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('abort'))) {
+            if (
+                error instanceof Error &&
+                (error.name === 'AbortError' ||
+                    error.message?.includes('aborted') ||
+                    error.message?.includes('abort'))
+            ) {
                 console.log('Inference cancelled by user');
                 throw new AbortError('**User cancelled inference**', toolCallContext);
             }
@@ -685,8 +748,8 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
         let toolCalls: ChatCompletionMessageFunctionToolCall[] = [];
 
         /*
-        * Handle LLM response
-        */
+         * Handle LLM response
+         */
         let content = '';
 
         if (stream) {
@@ -772,24 +835,33 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
                         try {
                             // Validate JSON arguments early for visibility
                             const parsed = JSON.parse(toolCall.function.arguments);
-                            console.log(`[TOOL_CALL_VALIDATION] Successfully parsed arguments for ${toolCall.function.name}:`, parsed);
+                            console.log(
+                                `[TOOL_CALL_VALIDATION] Successfully parsed arguments for ${toolCall.function.name}:`,
+                                parsed,
+                            );
                         } catch (error) {
-                            console.error(`[TOOL_CALL_VALIDATION] Invalid JSON in tool call arguments for ${toolCall.function.name}:`, {
-                                error: error instanceof Error ? error.message : String(error),
-                                arguments_length: toolCall.function.arguments.length,
-                                arguments_content: toolCall.function.arguments,
-                                arguments_hex: Buffer.from(toolCall.function.arguments).toString('hex')
-                            });
+                            console.error(
+                                `[TOOL_CALL_VALIDATION] Invalid JSON in tool call arguments for ${toolCall.function.name}:`,
+                                {
+                                    error: error instanceof Error ? error.message : String(error),
+                                    arguments_length: toolCall.function.arguments.length,
+                                    arguments_content: toolCall.function.arguments,
+                                    arguments_hex: Buffer.from(toolCall.function.arguments).toString('hex'),
+                                },
+                            );
                         }
                     }
                 }
 
                 // Filter invalid tool calls (must have name)
-                const dropped = toolCalls.filter(tc => !tc.function.name || tc.function.name.trim() === '');
+                const dropped = toolCalls.filter((tc) => !tc.function.name || tc.function.name.trim() === '');
                 if (dropped.length) {
-                    console.warn(`[TOOL_CALL_WARNING] Dropping ${dropped.length} streamed tool_call(s) without function name`, dropped);
+                    console.warn(
+                        `[TOOL_CALL_WARNING] Dropping ${dropped.length} streamed tool_call(s) without function name`,
+                        dropped,
+                    );
                 }
-                toolCalls = toolCalls.filter(tc => tc.function.name && tc.function.name.trim() !== '');
+                toolCalls = toolCalls.filter((tc) => tc.function.name && tc.function.name.trim() !== '');
             } else {
                 // Handle the case where stream was requested but a non-stream response was received
                 console.error('Expected a stream response but received a non-stream response.');
@@ -800,31 +872,32 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
             // If not streaming, get the full response content (response is Responses object)
             content = (response as any)?.output_text ?? '';
             const allToolCalls = extractToolCallsFromResponse(response);
-            const droppedNonStream = allToolCalls.filter(tc => !tc.function.name || tc.function.name.trim() === '');
+            const droppedNonStream = allToolCalls.filter((tc) => !tc.function.name || tc.function.name.trim() === '');
             if (droppedNonStream.length) {
-                console.warn(`[TOOL_CALL_WARNING] Dropping ${droppedNonStream.length} non-stream tool_call(s) without function name`, droppedNonStream);
+                console.warn(
+                    `[TOOL_CALL_WARNING] Dropping ${droppedNonStream.length} non-stream tool_call(s) without function name`,
+                    droppedNonStream,
+                );
             }
-            toolCalls = allToolCalls.filter(tc => tc.function.name && tc.function.name.trim() !== '');
+            toolCalls = allToolCalls.filter((tc) => tc.function.name && tc.function.name.trim() !== '');
 
             // Token usage (Responses shape may differ by provider)
-            const totalTokens =
-                (response as any)?.usage?.total_tokens ??
-                (response as any)?.usage?.output_tokens;
+            const totalTokens = (response as any)?.usage?.total_tokens ?? (response as any)?.usage?.output_tokens;
             console.log(`Total tokens used in prompt: ${totalTokens}`);
         }
 
-        const assistantMessage = { role: "assistant" as MessageRole, content, tool_calls: toolCalls };
+        const assistantMessage = { role: 'assistant' as MessageRole, content, tool_calls: toolCalls };
 
         if (onAssistantMessage) {
             await onAssistantMessage(assistantMessage);
         }
 
         /*
-        * Handle tool calls
-        */
+         * Handle tool calls
+         */
         if (!content && !stream && !toolCalls.length) {
             console.warn('No content received from OpenAI', JSON.stringify(response, null, 2));
-            return { string: "", toolCallContext };
+            return { string: '', toolCallContext };
         }
 
         let executedToolCalls: ToolCallResult[] = [];
@@ -832,12 +905,20 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
             try {
                 executedToolCalls = await executeToolCalls(toolCalls, tools);
             } catch (error) {
-                console.error(`Tool execution failed${toolCalls.length > 0 ? ` for ${toolCalls[0].function.name}` : ''}:`, error);
+                console.error(
+                    `Tool execution failed${toolCalls.length > 0 ? ` for ${toolCalls[0].function.name}` : ''}:`,
+                    error,
+                );
                 // Check if error is an abort error
                 if (error instanceof AbortError) {
                     console.warn(`Tool call was aborted, ending tool call chain with the latest tool call result`);
 
-                    const newToolCallContext = updateToolCallContext(toolCallContext, assistantMessage, executedToolCalls, completionConfig?.detector);
+                    const newToolCallContext = updateToolCallContext(
+                        toolCallContext,
+                        assistantMessage,
+                        executedToolCalls,
+                        completionConfig?.detector,
+                    );
                     return { string: content, toolCallContext: newToolCallContext };
                 }
                 // Otherwise, continue
@@ -845,12 +926,17 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
         }
 
         /*
-        * Handle tool call results
-        */
+         * Handle tool call results
+         */
         if (executedToolCalls.length) {
             console.log(`Tool calls executed:`, JSON.stringify(executedToolCalls, null, 2));
 
-            const newToolCallContext = updateToolCallContext(toolCallContext, assistantMessage, executedToolCalls, completionConfig?.detector);
+            const newToolCallContext = updateToolCallContext(
+                toolCallContext,
+                assistantMessage,
+                executedToolCalls,
+                completionConfig?.detector,
+            );
 
             // Stop recursion if completion signal detected
             if (newToolCallContext.completionSignal?.signaled) {
@@ -859,62 +945,67 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
                 if (schema && schemaName) {
                     throw new AbortError(
                         `Completion signaled: ${newToolCallContext.completionSignal.summary || 'Task complete'}`,
-                        newToolCallContext
+                        newToolCallContext,
                     );
                 }
                 return {
                     string: content || newToolCallContext.completionSignal.summary || 'Task complete',
-                    toolCallContext: newToolCallContext
+                    toolCallContext: newToolCallContext,
                 };
             }
 
             // Filter completion tools from recursion trigger
-            const executedCallsWithResults = executedToolCalls.filter(result =>
-                result.result !== undefined &&
-                !(completionConfig?.detector?.isCompletionTool(result.name))
+            const executedCallsWithResults = executedToolCalls.filter(
+                (result) => result.result !== undefined && !(completionConfig?.detector?.isCompletionTool(result.name)),
             );
             console.log(`${actionKey}: Tool depth ${newToolCallContext.depth}/${getMaxToolCallingDepth(actionKey)}`);
 
             if (executedCallsWithResults.length) {
                 if (schema && schemaName) {
-                    const output = await infer<OutputSchema>({
-                        env,
-                        metadata,
-                        messages,
-                        schema,
-                        schemaName,
-                        format,
-                        formatOptions,
-                        actionKey,
-                        modelName,
-                        maxTokens,
-                        stream,
-                        tools,
-                        reasoning_effort,
-                        temperature,
-                        frequency_penalty,
-                        abortSignal,
-                        onAssistantMessage,
-                        completionConfig,
-                    }, newToolCallContext);
+                    const output = await infer<OutputSchema>(
+                        {
+                            env,
+                            metadata,
+                            messages,
+                            schema,
+                            schemaName,
+                            format,
+                            formatOptions,
+                            actionKey,
+                            modelName,
+                            maxTokens,
+                            stream,
+                            tools,
+                            reasoning_effort,
+                            temperature,
+                            frequency_penalty,
+                            abortSignal,
+                            onAssistantMessage,
+                            completionConfig,
+                        },
+                        newToolCallContext,
+                    );
                     return output;
                 } else {
-                    const output = await infer({
-                        env,
-                        metadata,
-                        messages,
-                        modelName,
-                        maxTokens,
-                        actionKey,
-                        stream,
-                        tools,
-                        reasoning_effort,
-                        temperature,
-                        frequency_penalty,
-                        abortSignal,
-                        onAssistantMessage,
-                        completionConfig,
-                    }, newToolCallContext);
+                    const output = await infer(
+                        {
+                            env,
+                            metadata,
+                            messages,
+                            modelName,
+                            maxTokens,
+                            actionKey,
+                            stream,
+                            tools,
+                            reasoning_effort,
+                            temperature,
+                            frequency_penalty,
+                            abortSignal,
+                            onAssistantMessage,
+                            completionConfig,
+                        },
+                        newToolCallContext,
+                    );
                     return output;
                 }
             } else {
