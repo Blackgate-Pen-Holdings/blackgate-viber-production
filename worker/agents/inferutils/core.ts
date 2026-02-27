@@ -641,54 +641,36 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
 
         // Responses API: either a non-stream response object, or a Stream of response events.
         let response: any | Stream<any>;
+
         try {
-            const commonBody = {
+            response = await client.responses.create({
                 ...schemaObj,
                 ...extraBody,
                 ...toolsOpts,
                 model: modelName,
+                // Responses API uses `input` instead of `messages`.
+                // The OpenAI SDK accepts chat-style messages as input items.
                 input: messagesToPass as any,
+                // Responses naming
                 max_output_tokens: maxTokens || 150000,
+                stream: !!stream,
+                reasoning_effort: modelConfig.nonReasoning ? undefined : reasoning_effort,
                 temperature,
                 frequency_penalty,
-
-                // Responses API (openai@5.23.2) uses `reasoning`, not `reasoning_effort`
-                ...(modelConfig.nonReasoning || !reasoning_effort
-                    ? {}
-                    : { reasoning: { effort: reasoning_effort } }),
-            };
-
-            if (stream) {
-                response = await client.responses.create(
-                    { ...commonBody, stream: true as const },
-                    {
-                        signal: abortSignal,
-                        headers: {
-                            "cf-aig-metadata": JSON.stringify({
-                                chatId: metadata.agentId,
-                                userId: metadata.userId,
-                                schemaName,
-                                actionKey,
-                            }),
-                        },
+                // <<— request-specific fetch options go here
+                requestOptions: {
+                    signal: abortSignal,
+                    headers: {
+                        'cf-aig-metadata': JSON.stringify({
+                            chatId: metadata.agentId,
+                            userId: metadata.userId,
+                            schemaName,
+                            actionKey,
+                        }),
                     },
-                );
-            } else {
-                response = await client.responses.create(
-                    { ...commonBody, stream: false as const },
-                    {
-                        signal: abortSignal,
-                        headers: {
-                            "cf-aig-metadata": JSON.stringify({
-                                chatId: metadata.agentId,
-                                userId: metadata.userId,
-                                schemaName,
-                                actionKey,
-                            }),
-                        },
-                    },
-                ); console.log(`Inference response received`);
-              }
+                },
+            });
+            console.log(`Inference response received`);
         } catch (error) {
             // Check if error is due to abort
             if (error instanceof Error && (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('abort'))) {
