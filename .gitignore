@@ -56,3 +56,7 @@ debug-tools/presentation-tester
 
 .test-data
 cli
+
+# Temporary development files
+*.tmp
+tmp-*

@@ -31,37 +31,56 @@ function optimizeInputs(messages: Message[]): Message[] {
     }));
 }
 
-// Streaming tool-call accumulation helpers 
-type ToolCallsArray = NonNullable<NonNullable<ChatCompletionChunk['choices'][number]['delta']>['tool_calls']>;
-type ToolCallDelta = ToolCallsArray[number];
+// ----------------------------------------------------------------------------------
+// Responses streaming tool-call accumulation helpers 
+// ----------------------------------------------------------------------------------
+
 type ToolAccumulatorEntry = ChatCompletionMessageFunctionToolCall & { index?: number; __order: number };
 
 function synthIdForIndex(i: number): string {
     return `tool_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`;
 }
 
-function accumulateToolCallDelta(
+type ResponseOutputItemAddedEvent = {
+    type: 'response.output_item.added';
+    output_index: number;
+    item: {
+        type: 'function_call';
+        id: string;      // stable item_id
+        name: string;
+        arguments: string;
+    };
+};
+
+type ResponseFunctionCallArgumentsDeltaEvent = {
+    type: 'response.function_call_arguments.delta';
+    output_index: number;
+    item_id: string;   // id of the function-call item
+    delta: string;     // args delta
+};
+
+type ResponseEvent =
+    | ResponseOutputItemAddedEvent
+    | ResponseFunctionCallArgumentsDeltaEvent;
+
+function getOrCreateToolEntry(
     byIndex: Map<number, ToolAccumulatorEntry>,
     byId: Map<string, ToolAccumulatorEntry>,
-    deltaToolCall: ToolCallDelta,
-    orderCounterRef: { value: number }
-): void {
-    const idx = deltaToolCall.index;
-    const idFromDelta = deltaToolCall.id;
+    params: { index: number; idFromEvent?: string; orderCounterRef: { value: number } },
+): ToolAccumulatorEntry {
+    const { index, idFromEvent, orderCounterRef } = params;
 
     let entry: ToolAccumulatorEntry | undefined;
 
-    // Look up existing entry by id or index
-    if (idFromDelta && byId.has(idFromDelta)) {
-        entry = byId.get(idFromDelta)!;
-        console.log(`[TOOL_CALL_DEBUG] Found existing entry by id: ${idFromDelta}`);
-    } else if (idx !== undefined && byIndex.has(idx)) {
-        entry = byIndex.get(idx)!;
-        console.log(`[TOOL_CALL_DEBUG] Found existing entry by index: ${idx}`);
+    if (idFromEvent && byId.has(idFromEvent)) {
+        entry = byId.get(idFromEvent)!;
+        console.log(`[TOOL_CALL_DEBUG] Found existing entry by id: ${idFromEvent}`);
+    } else if (byIndex.has(index)) {
+        entry = byIndex.get(index)!;
+        console.log(`[TOOL_CALL_DEBUG] Found existing entry by index: ${index}`);
     } else {
-        console.log(`[TOOL_CALL_DEBUG] Creating new entry - id: ${idFromDelta}, index: ${idx}`);
-        // Create new entry
-        const provisionalId = idFromDelta || synthIdForIndex(idx ?? byId.size);
+        console.log(`[TOOL_CALL_DEBUG] Creating new entry - id: ${idFromEvent}, index: ${index}`);
+        const provisionalId = idFromEvent ?? synthIdForIndex(index ?? byId.size);
         entry = {
             id: provisionalId,
             type: 'function',
@@ -70,64 +89,128 @@ function accumulateToolCallDelta(
                 arguments: '',
             },
             __order: orderCounterRef.value++,
-            ...(idx !== undefined ? { index: idx } : {}),
+            index,
         };
-        if (idx !== undefined) byIndex.set(idx, entry);
+        byIndex.set(index, entry);
         byId.set(provisionalId, entry);
     }
 
-    // Update id if provided and different
-    if (idFromDelta && entry.id !== idFromDelta) {
+    if (idFromEvent && entry.id !== idFromEvent) {
         byId.delete(entry.id);
-        entry.id = idFromDelta;
+        entry.id = idFromEvent;
         byId.set(entry.id, entry);
     }
 
-    // Register index if provided and not yet registered
-    if (idx !== undefined && entry.index === undefined) {
-        entry.index = idx;
-        byIndex.set(idx, entry);
+    if (entry.index === undefined) {
+        entry.index = index;
+        byIndex.set(index, entry);
     }
 
-    // Update function name - replace if provided
-    if (deltaToolCall.function?.name) {
-        entry.function.name = deltaToolCall.function.name;
-    }
+    return entry;
+}
 
-    // Append arguments - accumulate string chunks
-    if (deltaToolCall.function?.arguments !== undefined) {
-        const before = entry.function.arguments;
-        const chunk = deltaToolCall.function.arguments;
+function accumulateResponsesToolEvent(
+    byIndex: Map<number, ToolAccumulatorEntry>,
+    byId: Map<string, ToolAccumulatorEntry>,
+    event: ResponseEvent,
+    orderCounterRef: { value: number },
+): void {
+    switch (event.type) {
+        case 'response.output_item.added': {
+            const idx = event.output_index;
+            const item = event.item;
 
-        // Check if we already have complete JSON and this is extra data. Question: Do we want this?
-        let isComplete = false;
-        if (before.length > 0) {
-            try {
-                JSON.parse(before);
-                isComplete = true;
-                console.warn(`[TOOL_CALL_WARNING] Already have complete JSON, ignoring additional chunk for ${entry.function.name}:`, {
-                    existing_json: before,
-                    ignored_chunk: chunk
-                });
-            } catch {
-                // Not complete yet, continue accumulating
-            }
-        }
+            if (item.type !== 'function_call') return;
 
-        if (!isComplete) {
-            entry.function.arguments += chunk;
-
-            // Debug logging for tool call argument accumulation
-            console.log(`[TOOL_CALL_DEBUG] Accumulating arguments for ${entry.function.name || 'unknown'}:`, {
-                id: entry.id,
-                index: entry.index,
-                before_length: before.length,
-                chunk_length: chunk.length,
-                chunk_content: chunk,
-                after_length: entry.function.arguments.length,
-                after_content: entry.function.arguments
+            const entry = getOrCreateToolEntry(byIndex, byId, {
+                index: idx,
+                idFromEvent: item.id,
+                orderCounterRef,
             });
+
+            entry.function.name = item.name;
+
+            if (item.arguments) {
+                const before = entry.function.arguments;
+                const chunk = item.arguments;
+
+                let isComplete = false;
+                if (before.length > 0) {
+                    try {
+                        JSON.parse(before);
+                        isComplete = true;
+                        console.warn(`[TOOL_CALL_WARNING] Already have complete JSON, ignoring additional initial chunk for ${entry.function.name}:`, {
+                            existing_json: before,
+                            ignored_chunk: chunk
+                        });
+                    } catch {
+                        // Not complete yet, continue accumulating
+                    }
+                }
+
+                if (!isComplete) {
+                    entry.function.arguments += chunk;
+                    console.log(`[TOOL_CALL_DEBUG] Seeding arguments for ${entry.function.name || 'unknown'}:`, {
+                        id: entry.id,
+                        index: entry.index,
+                        before_length: before.length,
+                        chunk_length: chunk.length,
+                        chunk_content: chunk,
+                        after_length: entry.function.arguments.length,
+                        after_content: entry.function.arguments
+                    });
+                }
+            }
+            break;
         }
+
+        case 'response.function_call_arguments.delta': {
+            const idx = event.output_index;
+            const idFromEvent = event.item_id;
+            const delta = event.delta ?? '';
+
+            const entry = getOrCreateToolEntry(byIndex, byId, {
+                index: idx,
+                idFromEvent,
+                orderCounterRef,
+            });
+
+            if (delta !== undefined) {
+                const before = entry.function.arguments;
+                const chunk = delta;
+
+                let isComplete = false;
+                if (before.length > 0) {
+                    try {
+                        JSON.parse(before);
+                        isComplete = true;
+                        console.warn(`[TOOL_CALL_WARNING] Already have complete JSON, ignoring additional delta chunk for ${entry.function.name}:`, {
+                            existing_json: before,
+                            ignored_chunk: chunk
+                        });
+                    } catch {
+                        // Not complete yet, continue accumulating
+                    }
+                }
+
+                if (!isComplete) {
+                    entry.function.arguments += chunk;
+                    console.log(`[TOOL_CALL_DEBUG] Accumulating arguments for ${entry.function.name || 'unknown'}:`, {
+                        id: entry.id,
+                        index: entry.index,
+                        before_length: before.length,
+                        chunk_length: chunk.length,
+                        chunk_content: chunk,
+                        after_length: entry.function.arguments.length,
+                        after_content: entry.function.arguments
+                    });
+                }
+            }
+            break;
+        }
+
+        default:
+            break;
     }
 }
 
@@ -615,7 +698,6 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
                         return false;
                     }
                 }
-
                 return true;
             });
 
@@ -739,32 +821,34 @@ export async function infer<OutputSchema extends z.AnyZodObject>({
                 const byId = new Map<string, ToolAccumulatorEntry>();
                 const orderCounterRef = { value: 0 };
 
-                for await (const event of response) {
-                    const delta = (event as ChatCompletionChunk).choices[0]?.delta;
+                for await (const rawEvent of response as any as AsyncIterable<any>) {
+                    const event = rawEvent as any;
 
-                    // Provider-specific logging
-                    const provider = modelName.split('/')[0];
-                    if (delta?.tool_calls && (provider === 'google-ai-studio' || provider === 'gemini')) {
-                        console.log(`[PROVIDER_DEBUG] ${provider} tool_calls delta:`, JSON.stringify(delta.tool_calls, null, 2));
+                    // Route Responses tool events
+                    if (event.type === 'response.output_item.added' || event.type === 'response.function_call_arguments.delta') {
+                        accumulateResponsesToolEvent(byIndex, byId, event as ResponseEvent, orderCounterRef);
                     }
 
-                    if (delta?.tool_calls) {
-                        try {
-                            for (const deltaToolCall of delta.tool_calls as ToolCallsArray) {
-                                accumulateToolCallDelta(byIndex, byId, deltaToolCall, orderCounterRef);
-                            }
-                        } catch (error) {
-                            console.error('Error processing tool calls in streaming:', error);
-                        }
-                    }
+                    // Support legacy ChatCompletionChunk text deltas (used for standard content stream)
+                    const delta = event.choices?.[0]?.delta as { content?: string } | undefined;
 
                     // Process content
-                    content += delta?.content || '';
-                    const slice = content.slice(streamIndex);
-                    const finishReason = (event as ChatCompletionChunk).choices[0]?.finish_reason;
-                    if (slice.length >= stream.chunk_size || finishReason != null) {
-                        stream.onChunk(slice);
-                        streamIndex += slice.length;
+                    if (delta && delta.content) {
+                        content += delta.content;
+                        const slice = content.slice(streamIndex);
+                        const finishReason = event.choices?.[0]?.finish_reason;
+                        if (slice.length >= stream.chunk_size || finishReason != null) {
+                            stream.onChunk(slice);
+                            streamIndex += slice.length;
+                        }
+                    } else if (event.type === 'response.content_part.delta' && event.delta) {
+                        // Forward-compatible with Responses stream content deltas
+                        content += event.delta.text || '';
+                        const slice = content.slice(streamIndex);
+                        if (slice.length >= stream.chunk_size) {
+                            stream.onChunk(slice);
+                            streamIndex += slice.length;
+                        }
                     }
                 }
 
