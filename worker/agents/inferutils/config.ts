@@ -30,14 +30,14 @@ const COMMON_AGENT_CONFIGS = {
         reasoning_effort: 'low',
         max_tokens: 2500,
         fallbackModel: AIModels.OPENAI_5_NANO,
-        temperature: 0.05,
+        temperature: 1,
     },
     templateSelection: {
         name: AIModels.OPENAI_5_MINI,
         reasoning_effort: 'low',
         max_tokens: 2000,
         fallbackModel: AIModels.OPENAI_5_NANO,
-        temperature: 0.4,
+        temperature: 1,
       },
 } as const;
 
@@ -98,7 +98,7 @@ const PLATFORM_AGENT_CONFIG: AgentConfig = {
         reasoning_effort: 'low',
         max_tokens: 1200,
         fallbackModel: AIModels.OPENAI_5_MINI,
-        temperature: 0.8,
+        temperature: 1,
     },
     deepDebugger: {
         name: AIModels.OPENAI_5_2_PRO,
@@ -134,7 +134,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
         reasoning_effort: 'low',
         max_tokens: 2000,
         fallbackModel: AIModels.OPENAI_5_NANO,
-        temperature: 0.4,
+        temperature: 1,
     },
     blueprint: {
         name: AIModels.OPENAI_5_2_PRO,
@@ -164,7 +164,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
         reasoning_effort: 'low',
         max_tokens: 1200,
         fallbackModel: AIModels.OPENAI_5_MINI,
-        temperature: 0.8,
+        temperature: 1,
     },
     deepDebugger: {
         name: AIModels.OPENAI_5_2_PRO,
