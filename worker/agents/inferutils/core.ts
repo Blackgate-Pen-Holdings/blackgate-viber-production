@@ -11,7 +11,6 @@ import { zodResponseFormat } from 'openai/helpers/zod.mjs';
 import {
     ChatCompletionMessageFunctionToolCall,
     type ReasoningEffort,
-    type ChatCompletionChunk,
 } from 'openai/resources.mjs';
 import { CompletionSignal, Message, MessageContent, MessageRole } from './common';
 import { ToolCallResult, ToolDefinition, toOpenAITool } from '../tools/types';
