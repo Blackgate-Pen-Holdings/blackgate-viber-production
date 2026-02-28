@@ -1,9 +1,5 @@
-import OpenAI from 'openai';
+import { OpenAI } from 'openai';
 import { Stream } from 'openai/streaming';
-import type {
-    ResponseCreateParamsNonStreaming,
-    ResponseCreateParamsStreaming,
-} from 'openai/resources/responses/responses';
 import { z } from 'zod';
 import {
     type SchemaFormat,
@@ -15,17 +11,11 @@ import { zodResponseFormat } from 'openai/helpers/zod.mjs';
 import {
     ChatCompletionMessageFunctionToolCall,
     type ReasoningEffort,
+    type ChatCompletionChunk,
 } from 'openai/resources.mjs';
 import { CompletionSignal, Message, MessageContent, MessageRole } from './common';
 import { ToolCallResult, ToolDefinition, toOpenAITool } from '../tools/types';
-import {
-    AgentActionKey,
-    AI_MODEL_CONFIG,
-    AIModelConfig,
-    AIModels,
-    InferenceMetadata,
-    type InferenceRuntimeOverrides,
-} from './config.types';
+import { AgentActionKey, AI_MODEL_CONFIG, AIModelConfig, AIModels, InferenceMetadata, type InferenceRuntimeOverrides } from './config.types';
 import { RateLimitService } from '../../services/rate-limit/rateLimits';
 import { getUserConfigurableSettings } from '../../config';
 import { SecurityError, RateLimitExceededError } from 'shared/types/errors';
@@ -41,82 +31,118 @@ function optimizeInputs(messages: Message[]): Message[] {
     }));
 }
 
-/**
- * Responses API streaming tool-call accumulation helpers.
- *
- * We intentionally keep the internal tool-call representation as
- * ChatCompletionMessageFunctionToolCall so downstream tool execution and
- * conversation/context code doesn't need to change.
- */
-type ToolAccumulatorEntry = ChatCompletionMessageFunctionToolCall & { __order: number };
+// Streaming tool-call accumulation helpers 
+type ToolCallsArray = NonNullable<NonNullable<ChatCompletionChunk['choices'][number]['delta']>['tool_calls']>;
+type ToolCallDelta = ToolCallsArray[number];
+type ToolAccumulatorEntry = ChatCompletionMessageFunctionToolCall & { index?: number; __order: number };
 
-function synthId(): string {
-    return `tool_${ Date.now() }_${ Math.random().toString(36).slice(2) } `;
+function synthIdForIndex(i: number): string {
+    return `tool_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`;
 }
 
-function ensureToolEntry(
+function accumulateToolCallDelta(
+    byIndex: Map<number, ToolAccumulatorEntry>,
     byId: Map<string, ToolAccumulatorEntry>,
-    id: string | undefined,
-    orderCounterRef: { value: number },
-): ToolAccumulatorEntry {
-    const toolId = id || synthId();
-    const existing = byId.get(toolId);
-    if (existing) return existing;
+    deltaToolCall: ToolCallDelta,
+    orderCounterRef: { value: number }
+): void {
+    const idx = deltaToolCall.index;
+    const idFromDelta = deltaToolCall.id;
 
-    const created: ToolAccumulatorEntry = {
-        id: toolId,
-        type: 'function',
-        function: {
-            name: '',
-            arguments: '',
-        },
-        __order: orderCounterRef.value++,
-    };
-    byId.set(toolId, created);
-    return created;
-}
+    let entry: ToolAccumulatorEntry | undefined;
 
-function assembleToolCallsFromMap(byId: Map<string, ToolAccumulatorEntry>): ChatCompletionMessageFunctionToolCall[] {
-    return Array.from(byId.values())
-        .sort((a, b) => a.__order - b.__order)
-        .map((e) => ({
-            id: e.id,
-            type: 'function' as const,
-            function: { name: e.function.name, arguments: e.function.arguments },
-        }));
-}
+    // Look up existing entry by id or index
+    if (idFromDelta && byId.has(idFromDelta)) {
+        entry = byId.get(idFromDelta)!;
+        console.log(`[TOOL_CALL_DEBUG] Found existing entry by id: ${idFromDelta}`);
+    } else if (idx !== undefined && byIndex.has(idx)) {
+        entry = byIndex.get(idx)!;
+        console.log(`[TOOL_CALL_DEBUG] Found existing entry by index: ${idx}`);
+    } else {
+        console.log(`[TOOL_CALL_DEBUG] Creating new entry - id: ${idFromDelta}, index: ${idx}`);
+        // Create new entry
+        const provisionalId = idFromDelta || synthIdForIndex(idx ?? byId.size);
+        entry = {
+            id: provisionalId,
+            type: 'function',
+            function: {
+                name: '',
+                arguments: '',
+            },
+            __order: orderCounterRef.value++,
+            ...(idx !== undefined ? { index: idx } : {}),
+        };
+        if (idx !== undefined) byIndex.set(idx, entry);
+        byId.set(provisionalId, entry);
+    }
 
-/**
- * Extract tool calls from a non-streaming Responses API response.
- * The Responses API returns "output" items (messages, tool calls, etc).
- * We map tool-call items into ChatCompletionMessageFunctionToolCall.
- */
-function extractToolCallsFromResponse(response: any): ChatCompletionMessageFunctionToolCall[] {
-    const out: any[] = Array.isArray(response?.output) ? response.output : [];
-    const toolCalls: ChatCompletionMessageFunctionToolCall[] = [];
+    // Update id if provided and different
+    if (idFromDelta && entry.id !== idFromDelta) {
+        byId.delete(entry.id);
+        entry.id = idFromDelta;
+        byId.set(entry.id, entry);
+    }
 
-    for (const item of out) {
-        const type = item?.type;
+    // Register index if provided and not yet registered
+    if (idx !== undefined && entry.index === undefined) {
+        entry.index = idx;
+        byIndex.set(idx, entry);
+    }
 
-        // Common: { type: "function_call", name, arguments, call_id }
-        // Also accept: { type: "tool_call", function: { name, arguments }, id/call_id }
-        if (type === 'function_call' || type === 'tool_call') {
-            const id = item?.call_id || item?.id || synthId();
-            const name = item?.name || item?.function?.name || '';
-            const args = item?.arguments ?? item?.function?.arguments ?? '';
+    // Update function name - replace if provided
+    if (deltaToolCall.function?.name) {
+        entry.function.name = deltaToolCall.function.name;
+    }
 
-            toolCalls.push({
-                id,
-                type: 'function',
-                function: {
-                    name,
-                    arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}),
-                },
+    // Append arguments - accumulate string chunks
+    if (deltaToolCall.function?.arguments !== undefined) {
+        const before = entry.function.arguments;
+        const chunk = deltaToolCall.function.arguments;
+
+        // Check if we already have complete JSON and this is extra data. Question: Do we want this?
+        let isComplete = false;
+        if (before.length > 0) {
+            try {
+                JSON.parse(before);
+                isComplete = true;
+                console.warn(`[TOOL_CALL_WARNING] Already have complete JSON, ignoring additional chunk for ${entry.function.name}:`, {
+                    existing_json: before,
+                    ignored_chunk: chunk
+                });
+            } catch {
+                // Not complete yet, continue accumulating
+            }
+        }
+
+        if (!isComplete) {
+            entry.function.arguments += chunk;
+
+            // Debug logging for tool call argument accumulation
+            console.log(`[TOOL_CALL_DEBUG] Accumulating arguments for ${entry.function.name || 'unknown'}:`, {
+                id: entry.id,
+                index: entry.index,
+                before_length: before.length,
+                chunk_length: chunk.length,
+                chunk_content: chunk,
+                after_length: entry.function.arguments.length,
+                after_content: entry.function.arguments
             });
         }
     }
+}
 
-    return toolCalls.filter(tc => tc.function.name && tc.function.name.trim() !== '');
+function assembleToolCalls(
+    byIndex: Map<number, ToolAccumulatorEntry>,
+    byId: Map<string, ToolAccumulatorEntry>
+): ChatCompletionMessageFunctionToolCall[] {
+    if (byIndex.size > 0) {
+        return Array.from(byIndex.values())
+            .sort((a, b) => (a.index! - b.index!))
+            .map((e) => ({ id: e.id, type: 'function' as const, function: { name: e.function.name, arguments: e.function.arguments } }));
+    }
+    return Array.from(byId.values())
+        .sort((a, b) => a.__order - b.__order)
+        .map((e) => ({ id: e.id, type: 'function' as const, function: { name: e.function.name, arguments: e.function.arguments } }));
 }
 
 function optimizeMessageContent(content: MessageContent): MessageContent {
@@ -144,6 +170,15 @@ function optimizeTextContent(content: string): string {
     // This preserves intentional spacing while removing truly excessive gaps
     content = content.replace(/\n\s*\n\s*\n\s*\n+/g, '\n\n\n');
 
+    // // Convert 4-space indentation to 2-space for non-Python/YAML content
+    // content = content.replace(/^( {4})+/gm, (match) =>
+    // 	'  '.repeat(match.length / 4),
+    // );
+
+    // // Convert 8-space indentation to 2-space
+    // content = content.replace(/^( {8})+/gm, (match) =>
+    // 	'  '.repeat(match.length / 8),
+    // );
     // 4. Remove leading/trailing whitespace from the entire content
     // (but preserve internal structure)
     content = content.trim();
@@ -152,7 +187,7 @@ function optimizeTextContent(content: string): string {
 }
 
 function buildGatewayPathname(cleanPathname: string, providerOverride?: AIGatewayProviders): string {
-    return providerOverride ? `${ cleanPathname } /${providerOverride}` : `${cleanPathname}/compat`;
+    return providerOverride ? `${cleanPathname}/${providerOverride}` : `${cleanPathname}/compat`;
 }
 
 function constructGatewayUrl(url: URL, providerOverride?: AIGatewayProviders): string {
@@ -173,11 +208,10 @@ export async function buildGatewayUrl(
     }
 
     // If CLOUDFLARE_AI_GATEWAY_URL is set and is a valid URL, use it directly
-    if (
-        env.CLOUDFLARE_AI_GATEWAY_URL &&
+    if (env.CLOUDFLARE_AI_GATEWAY_URL &&
         env.CLOUDFLARE_AI_GATEWAY_URL !== 'none' &&
-        env.CLOUDFLARE_AI_GATEWAY_URL.trim() !== ''
-    ) {
+        env.CLOUDFLARE_AI_GATEWAY_URL.trim() !== '') {
+
         try {
             const url = new URL(env.CLOUDFLARE_AI_GATEWAY_URL);
             // Validate it's actually an HTTP/HTTPS URL
@@ -187,20 +221,16 @@ export async function buildGatewayUrl(
                 url.pathname = buildGatewayPathname(cleanPathname, providerOverride);
                 return url.toString();
             }
-        } catch (_error) {
+        } catch (error) {
             // Invalid URL, fall through to use bindings
-            console.warn(
-                `Invalid CLOUDFLARE_AI_GATEWAY_URL provided: ${ env.CLOUDFLARE_AI_GATEWAY_URL }. Falling back to AI bindings.`,
-            );
+            console.warn(`Invalid CLOUDFLARE_AI_GATEWAY_URL provided: ${env.CLOUDFLARE_AI_GATEWAY_URL}. Falling back to AI bindings.`);
         }
     }
 
     // Build the url via bindings
     const gateway = env.AI.gateway(env.CLOUDFLARE_AI_GATEWAY);
-    // const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${ await gateway.getUrl() } compat`;
-    const rawUrl = await gateway.getUrl();
-    const baseUrl = new URL(rawUrl);
-    return constructGatewayUrl(baseUrl, providerOverride);
+    const baseUrl = providerOverride ? await gateway.getUrl(providerOverride) : `${await gateway.getUrl()}compat`;
+    return baseUrl;
 }
 
 function isValidApiKey(apiKey: string): boolean {
@@ -208,11 +238,7 @@ function isValidApiKey(apiKey: string): boolean {
         return false;
     }
     // Check if value is not 'default' or 'none' and is more than 10 characters long
-    if (
-        apiKey.trim().toLowerCase() === 'default' ||
-        apiKey.trim().toLowerCase() === 'none' ||
-        apiKey.trim().length < 10
-    ) {
+    if (apiKey.trim().toLowerCase() === 'default' || apiKey.trim().toLowerCase() === 'none' || apiKey.trim().length < 10) {
         return false;
     }
     return true;
@@ -224,7 +250,7 @@ async function getApiKey(
     _userId: string,
     runtimeOverrides?: InferenceRuntimeOverrides,
 ): Promise<string> {
-    console.log('Getting API key for provider: ', provider);
+    console.log("Getting API key for provider: ", provider);
 
     const runtimeKey = runtimeOverrides?.userApiKeys?.[provider];
     if (runtimeKey && isValidApiKey(runtimeKey)) {
@@ -232,7 +258,7 @@ async function getApiKey(
     }
     // Fallback to environment variables
     const providerKeyString = provider.toUpperCase().replaceAll('-', '_');
-    const envKey = `${ providerKeyString } _API_KEY` as keyof Env;
+    const envKey = `${providerKeyString}_API_KEY` as keyof Env;
     let apiKey: string = env[envKey] as string;
 
     // Check if apiKey is empty or undefined and is valid
@@ -255,9 +281,9 @@ export async function getConfigurationForModel(
     userId: string,
     runtimeOverrides?: InferenceRuntimeOverrides,
 ): Promise<{
-    baseURL: string;
-    apiKey: string;
-    defaultHeaders?: Record<string, string>;
+    baseURL: string,
+    apiKey: string,
+    defaultHeaders?: Record<string, string>,
 }> {
     let providerForcedOverride: AIGatewayProviders | undefined;
     if (modelConfig.directOverride) {
@@ -294,22 +320,19 @@ export async function getConfigurationForModel(
 
     const gatewayToken = isUsingCustomGateway
         ? gatewayOverride?.token
-        : gatewayOverride?.token ?? env.CLOUDFLARE_AI_GATEWAY_TOKEN;
+        : (gatewayOverride?.token ?? env.CLOUDFLARE_AI_GATEWAY_TOKEN);  // Platform gateway
 
     // Try to find API key of type <PROVIDER>_API_KEY else default to gateway token
     const apiKey = await getApiKey(modelConfig.provider, env, userId, runtimeOverrides);
 
     // AI Gateway wholesaling: when using BYOK provider key + platform gateway token
-    const defaultHeaders =
-        gatewayToken && apiKey !== gatewayToken
-            ? {
-                'cf-aig-authorization': `Bearer ${ gatewayToken } `,
-            }
-            : undefined;
+    const defaultHeaders = gatewayToken && apiKey !== gatewayToken ? {
+        'cf-aig-authorization': `Bearer ${gatewayToken}`,
+    } : undefined;
     return {
         baseURL,
         apiKey,
-        defaultHeaders,
+        defaultHeaders
     };
 }
 
@@ -372,18 +395,18 @@ export function serializeCallChain(context: ToolCallContext, finalResponse: stri
             content = (content || '').slice(0, 100);
         }
 
-        transcript += `< message role = "${message.role}" > ${ content } </message>`;
+        transcript += `<message role="${message.role}">${content}</message>`;
     }
-transcript += `<final_response>${finalResponse || '**cancelled**'}</final_response>`;
-transcript += '</call_chain_transcript>';
-return transcript;
+    transcript += `<final_response>${finalResponse || '**cancelled**'}</final_response>`;
+    transcript += '</call_chain_transcript>';
+    return transcript;
 }
 
 export class InferError extends Error {
     constructor(
         message: string,
         public response: string,
-        public toolCallContext?: ToolCallContext,
+        public toolCallContext?: ToolCallContext
     ) {
         super(message);
         this.name = 'InferError';
@@ -399,7 +422,7 @@ export class InferError extends Error {
     partialResponse(): InferResponseString {
         return {
             string: this.response,
-            toolCallContext: this.toolCallContext,
+            toolCallContext: this.toolCallContext
         };
     }
 }
@@ -431,10 +454,7 @@ export type InferResponseString = {
 /**
  * Execute all tool calls from OpenAI response
  */
-async function executeToolCalls(
-    openAiToolCalls: ChatCompletionMessageFunctionToolCall[],
-    originalDefinitions: ToolDefinition[],
-): Promise<ToolCallResult[]> {
+async function executeToolCalls(openAiToolCalls: ChatCompletionMessageFunctionToolCall[], originalDefinitions: ToolDefinition[]): Promise<ToolCallResult[]> {
     // Use dependency-aware execution engine
     return executeToolCallsWithDependencies(openAiToolCalls, originalDefinitions);
 }
@@ -443,15 +463,15 @@ function updateToolCallContext(
     toolCallContext: ToolCallContext | undefined,
     assistantMessage: Message,
     executedToolCalls: ToolCallResult[],
-    completionDetector?: CompletionDetector,
+    completionDetector?: CompletionDetector
 ) {
     const newMessages = [
         ...(toolCallContext?.messages || []),
         assistantMessage,
         ...executedToolCalls
-            .filter((result) => result.name && result.name.trim() !== '')
+            .filter(result => result.name && result.name.trim() !== '')
             .map((result, _) => ({
-                role: 'tool' as MessageRole,
+                role: "tool" as MessageRole,
                 content: result.result ? JSON.stringify(result.result) : 'done',
                 name: result.name,
                 tool_call_id: result.id,
@@ -470,7 +490,7 @@ function updateToolCallContext(
         messages: newMessages,
         depth: newDepth,
         completionSignal,
-        warningInjected: toolCallContext?.warningInjected || false,
+        warningInjected: toolCallContext?.warningInjected || false
     };
     return newToolCallContext;
 }
@@ -492,69 +512,54 @@ export function infer<OutputSchema extends z.AnyZodObject>(
  * This uses the response_format.schema parameter to ensure the model returns
  * a response that matches the provided schema.
  */
-export async function infer<OutputSchema extends z.AnyZodObject>(
-    {
-        env,
-        metadata,
-        messages,
-        schema,
-        schemaName,
-        actionKey,
-        format,
-        formatOptions,
-        modelName,
-        reasoning_effort,
-        temperature,
-        frequency_penalty,
-        maxTokens,
-        stream,
-        tools,
-        runtimeOverrides,
-        abortSignal,
-        onAssistantMessage,
-        completionConfig,
-    }: InferArgsBase & {
-        schema?: OutputSchema;
-        schemaName?: string;
-        format?: SchemaFormat;
-        formatOptions?: FormatterOptions;
-    },
-    toolCallContext?: ToolCallContext,
-): Promise<InferResponseObject<OutputSchema> | InferResponseString> {
+export async function infer<OutputSchema extends z.AnyZodObject>({
+    env,
+    metadata,
+    messages,
+    schema,
+    schemaName,
+    actionKey,
+    format,
+    formatOptions,
+    modelName,
+    reasoning_effort,
+    temperature,
+    frequency_penalty,
+    maxTokens,
+    stream,
+    tools,
+    runtimeOverrides,
+    abortSignal,
+    onAssistantMessage,
+    completionConfig,
+}: InferArgsBase & {
+    schema?: OutputSchema;
+    schemaName?: string;
+    format?: SchemaFormat;
+    formatOptions?: FormatterOptions;
+}, toolCallContext?: ToolCallContext): Promise<InferResponseObject<OutputSchema> | InferResponseString> {
     if (messages.length > MAX_LLM_MESSAGES) {
-        throw new RateLimitExceededError(
-            `Message limit exceeded: ${messages.length} messages (max: ${MAX_LLM_MESSAGES}). Please use context compactification.`,
-            RateLimitType.LLM_CALLS,
-        );
+        throw new RateLimitExceededError(`Message limit exceeded: ${messages.length} messages (max: ${MAX_LLM_MESSAGES}). Please use context compactification.`, RateLimitType.LLM_CALLS);
     }
 
     // Check tool calling depth to prevent infinite recursion
     const currentDepth = toolCallContext?.depth ?? 0;
     if (currentDepth >= getMaxToolCallingDepth(actionKey)) {
-        console.warn(
-            `Tool calling depth limit reached (${currentDepth}/${getMaxToolCallingDepth(actionKey)}). Stopping recursion.`,
-        );
+        console.warn(`Tool calling depth limit reached (${currentDepth}/${getMaxToolCallingDepth(actionKey)}). Stopping recursion.`);
         // Return a response indicating max depth reached
         if (schema) {
-            throw new AbortError(
-                `Maximum tool calling depth (${getMaxToolCallingDepth(actionKey)}) exceeded. Tools may be calling each other recursively.`,
-                toolCallContext,
-            );
+            throw new AbortError(`Maximum tool calling depth (${getMaxToolCallingDepth(actionKey)}) exceeded. Tools may be calling each other recursively.`, toolCallContext);
         }
         return {
             string: `[System: Maximum tool calling depth reached.]`,
-            toolCallContext,
+            toolCallContext
         };
     }
 
     try {
-        const userConfig = await getUserConfigurableSettings(env, metadata.userId);
-        await RateLimitService.enforceLLMCallsRateLimit(
-            env,
-            userConfig.security.rateLimit,
-            metadata.userId,
-            modelName,
-        );
+        const userConfig = await getUserConfigurableSettings(env, metadata.userId)
+        // Maybe in the future can expand using config object for other stuff like global model configs?
+        await RateLimitService.enforceLLMCallsRateLimit(env, userConfig.security.rateLimit, metadata.userId, modelName)
         const modelConfig = AI_MODEL_CONFIG[modelName as AIModels];
 
         const { apiKey, baseURL, defaultHeaders } = await getConfigurationForModel(
@@ -569,38 +574,33 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
         modelName = modelName.replace(/\[.*?\]/, '');
 
         const client = new OpenAI({ apiKey, baseURL: baseURL, defaultHeaders });
-
         const schemaObj =
             schema && schemaName && !format
                 ? { response_format: zodResponseFormat(schema, schemaName) }
                 : {};
-
-        const extraBody = modelName.includes('claude')
-            ? {
-                extra_body: {
-                    thinking: {
-                        type: 'enabled',
-                        budget_tokens: claude_thinking_budget_tokens[reasoning_effort ?? 'medium'],
-                    },
+        const extraBody = modelName.includes('claude') ? {
+            extra_body: {
+                thinking: {
+                    type: 'enabled',
+                    budget_tokens: claude_thinking_budget_tokens[reasoning_effort ?? 'medium'],
                 },
-            }
+            },
+        }
             : {};
 
         // Optimize messages to reduce token count
         const optimizedMessages = optimizeInputs(messages);
-        console.log(
-            `Token optimization: Original messages size ~${JSON.stringify(messages).length} chars, optimized size ~${JSON.stringify(optimizedMessages).length} chars`,
-        );
+        console.log(`Token optimization: Original messages size ~${JSON.stringify(messages).length} chars, optimized size ~${JSON.stringify(optimizedMessages).length} chars`);
 
         let messagesToPass = [...optimizedMessages];
         if (toolCallContext && toolCallContext.messages) {
             const ctxMessages = toolCallContext.messages;
             let validToolCallIds = new Set<string>();
 
-            let filtered = ctxMessages.filter((msg) => {
+            let filtered = ctxMessages.filter(msg => {
                 // Update valid IDs when we see assistant with tool_calls
                 if (msg.role === 'assistant' && msg.tool_calls) {
-                    validToolCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
+                    validToolCallIds = new Set(msg.tool_calls.map(tc => tc.id));
                     return true;
                 }
 
@@ -620,9 +620,9 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
             });
 
             // Remove empty tool call arrays from assistant messages
-            filtered = filtered.map((msg) => {
+            filtered = filtered.map(msg => {
                 if (msg.role === 'assistant' && msg.tool_calls) {
-                    msg.tool_calls = msg.tool_calls.filter((tc) => tc.id);
+                    msg.tool_calls = msg.tool_calls.filter(tc => tc.id);
                     if (msg.tool_calls.length === 0) {
                         msg.tool_calls = undefined;
                     }
@@ -637,7 +637,11 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
             if (!schema || !schemaName) {
                 throw new Error('Schema and schemaName are required when using a custom format');
             }
-            const formatInstructions = generateTemplateForSchema(schema, format, formatOptions);
+            const formatInstructions = generateTemplateForSchema(
+                schema,
+                format,
+                formatOptions,
+            );
             const lastMessage = messagesToPass[messagesToPass.length - 1];
 
             // Handle multi-modal content properly
@@ -671,162 +675,106 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
             }
         }
 
-        console.log(
-            `Running inference with ${modelName} using structured output with ${format} format, reasoning effort: ${reasoning_effort}, max tokens: ${maxTokens}, temperature: ${temperature}, frequency_penalty: ${frequency_penalty}, baseURL: ${baseURL}`,
-        );
+        console.log(`Running inference with ${modelName} using structured output with ${format} format, reasoning effort: ${reasoning_effort}, max tokens: ${maxTokens}, temperature: ${temperature}, frequency_penalty: ${frequency_penalty}, baseURL: ${baseURL}`);
 
-        const toolsOpts = tools
-            ? {
-                tools: tools.map((t) => toOpenAITool(t)),
-                tool_choice: 'auto' as const,
-            }
-            : {};
-
-        // Responses API: either a non-stream response object, or a Stream of response events.
-        let response: any | Stream<any>;
+        const toolsOpts = tools ? {
+            tools: tools.map(t => {
+                return toOpenAITool(t);
+            }),
+            tool_choice: 'auto' as const
+        } : {};
+        let response: OpenAI.ChatCompletion | OpenAI.ChatCompletionChunk | Stream<OpenAI.ChatCompletionChunk>;
         try {
-            const requestOptions = {
-                signal: abortSignal,
-                headers: {
-                    'cf-aig-metadata': JSON.stringify({
-                        chatId: metadata.agentId,
-                        userId: metadata.userId,
-                        schemaName,
-                        actionKey,
-                    }),
-                },
-            };
-
-            // IMPORTANT: do NOT put `stream` into this base object.
-            // We'll add it ONLY in the explicitly typed params objects below
-            // to satisfy openai@5.x overload resolution.
-            const baseParams = {
+            // Call OpenAI API with proper structured output format
+            response = await client.chat.completions.create({
                 ...schemaObj,
                 ...extraBody,
                 ...toolsOpts,
                 model: modelName,
-                input: messagesToPass as any,
-                max_output_tokens: maxTokens || 150000,
+                messages: messagesToPass as OpenAI.ChatCompletionMessageParam[],
+                max_completion_tokens: maxTokens || 150000,
+                stream: stream ? true : false,
+                reasoning_effort: modelConfig.nonReasoning ? undefined : reasoning_effort,
                 temperature,
                 frequency_penalty,
-
-                // Responses API uses `reasoning: { effort: ... }`
-                ...(modelConfig.nonReasoning || !reasoning_effort
-                    ? {}
-                    : { reasoning: { effort: reasoning_effort } }),
-            };
-
-            if (stream) {
-                const params: ResponseCreateParamsStreaming = {
-                    ...(baseParams as any),
-                    stream: true,
-                };
-                response = await client.responses.create(params, requestOptions);
-            } else {
-                const params: ResponseCreateParamsNonStreaming = {
-                    ...(baseParams as any),
-                    stream: false,
-                };
-                response = await client.responses.create(params, requestOptions);
-            }
-
+            }, {
+                signal: abortSignal,
+                headers: {
+                    "cf-aig-metadata": JSON.stringify({
+                        chatId: metadata.agentId,
+                        userId: metadata.userId,
+                        schemaName,
+                        actionKey,
+                    })
+                }
+            });
             console.log(`Inference response received`);
         } catch (error) {
             // Check if error is due to abort
-            if (
-                error instanceof Error &&
-                (error.name === 'AbortError' ||
-                    error.message?.includes('aborted') ||
-                    error.message?.includes('abort'))
-            ) {
+            if (error instanceof Error && (error.name === 'AbortError' || error.message?.includes('aborted') || error.message?.includes('abort'))) {
                 console.log('Inference cancelled by user');
                 throw new AbortError('**User cancelled inference**', toolCallContext);
             }
 
             console.error(`Failed to get inference response from OpenAI: ${error}`);
+            // if ((error instanceof Error && error.message.includes('429')) || (typeof error === 'string' && error.includes('429'))) {
+
+            //     throw new RateLimitExceededError('Rate limit exceeded in LLM calls, Please try again later', RateLimitType.LLM_CALLS);
+            // }
             throw error;
         }
-
         let toolCalls: ChatCompletionMessageFunctionToolCall[] = [];
 
         /*
-         * Handle LLM response
-         */
-        let content = '';
+        * Handle LLM response
+        */
 
+        let content = '';
         if (stream) {
             // If streaming is enabled, handle the stream response
             if (response instanceof Stream) {
                 let streamIndex = 0;
-
-                // Accumulate tool calls by id while streaming
+                // Accumulators for tool calls: by index (preferred) and by id (fallback when index is missing)
+                const byIndex = new Map<number, ToolAccumulatorEntry>();
                 const byId = new Map<string, ToolAccumulatorEntry>();
                 const orderCounterRef = { value: 0 };
 
                 for await (const event of response) {
-                    const t = (event as any)?.type;
+                    const delta = (event as ChatCompletionChunk).choices[0]?.delta;
 
-                    // Text deltas commonly arrive as: response.output_text.delta
-                    if (t === 'response.output_text.delta') {
-                        const deltaText = (event as any)?.delta ?? '';
-                        content += deltaText;
+                    // Provider-specific logging
+                    const provider = modelName.split('/')[0];
+                    if (delta?.tool_calls && (provider === 'google-ai-studio' || provider === 'gemini')) {
+                        console.log(`[PROVIDER_DEBUG] ${provider} tool_calls delta:`, JSON.stringify(delta.tool_calls, null, 2));
+                    }
 
-                        const slice = content.slice(streamIndex);
-                        if (slice.length >= stream.chunk_size) {
-                            stream.onChunk(slice);
-                            streamIndex += slice.length;
+                    if (delta?.tool_calls) {
+                        try {
+                            for (const deltaToolCall of delta.tool_calls as ToolCallsArray) {
+                                accumulateToolCallDelta(byIndex, byId, deltaToolCall, orderCounterRef);
+                            }
+                        } catch (error) {
+                            console.error('Error processing tool calls in streaming:', error);
                         }
                     }
 
-                    // Tool call creation/update events: accept multiple possible shapes
-                    if (
-                        t === 'response.function_call' ||
-                        t === 'response.function_call_arguments.delta' ||
-                        t === 'response.function_call_arguments.done' ||
-                        t === 'response.tool_call' ||
-                        t === 'response.tool_call_arguments.delta'
-                    ) {
-                        const item =
-                            (event as any)?.item ??
-                            (event as any)?.tool_call ??
-                            (event as any)?.function_call ??
-                            {};
-
-                        const callId = item?.call_id || item?.id || (event as any)?.call_id;
-                        const entry = ensureToolEntry(byId, callId, orderCounterRef);
-
-                        // Update name if present
-                        const name = item?.name || item?.function?.name || (event as any)?.name;
-                        if (name) entry.function.name = name;
-
-                        // Append args delta if present
-                        const argsDelta =
-                            (event as any)?.delta ??
-                            item?.arguments_delta ??
-                            (event as any)?.arguments_delta;
-
-                        if (argsDelta !== undefined && argsDelta !== null) {
-                            entry.function.arguments += String(argsDelta);
-                        }
-
-                        // Some events might include full arguments rather than deltas
-                        const argsFull = item?.arguments ?? item?.function?.arguments;
-                        if (argsFull && typeof argsFull === 'string' && entry.function.arguments.length === 0) {
-                            entry.function.arguments = argsFull;
-                        }
-                    }
-
-                    // Flush final chunk if we get a "done" signal
-                    if (t === 'response.completed' || t === 'response.output_text.done') {
-                        const slice = content.slice(streamIndex);
-                        if (slice.length) {
-                            stream.onChunk(slice);
-                            streamIndex += slice.length;
-                        }
+                    // Process content
+                    content += delta?.content || '';
+                    const slice = content.slice(streamIndex);
+                    const finishReason = (event as ChatCompletionChunk).choices[0]?.finish_reason;
+                    if (slice.length >= stream.chunk_size || finishReason != null) {
+                        stream.onChunk(slice);
+                        streamIndex += slice.length;
                     }
                 }
 
-                toolCalls = assembleToolCallsFromMap(byId);
+                // Assemble toolCalls with preference for index ordering, else first-seen order
+                const assembled = assembleToolCalls(byIndex, byId);
+                const dropped = assembled.filter(tc => !tc.function.name || tc.function.name.trim() === '');
+                if (dropped.length) {
+                    console.warn(`[TOOL_CALL_WARNING] Dropping ${dropped.length} streamed tool_call(s) without function name`, dropped);
+                }
+                toolCalls = assembled.filter(tc => tc.function.name && tc.function.name.trim() !== '');
 
                 // Validate accumulated tool calls (do not mutate arguments)
                 for (const toolCall of toolCalls) {
@@ -837,90 +785,72 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
                         try {
                             // Validate JSON arguments early for visibility
                             const parsed = JSON.parse(toolCall.function.arguments);
-                            console.log(
-                                `[TOOL_CALL_VALIDATION] Successfully parsed arguments for ${toolCall.function.name}:`,
-                                parsed,
-                            );
+                            console.log(`[TOOL_CALL_VALIDATION] Successfully parsed arguments for ${toolCall.function.name}:`, parsed);
                         } catch (error) {
-                            console.error(
-                                `[TOOL_CALL_VALIDATION] Invalid JSON in tool call arguments for ${toolCall.function.name}:`,
-                                {
-                                    error: error instanceof Error ? error.message : String(error),
-                                    arguments_length: toolCall.function.arguments.length,
-                                    arguments_content: toolCall.function.arguments,
-                                    arguments_hex: Buffer.from(toolCall.function.arguments).toString('hex'),
-                                },
-                            );
+                            console.error(`[TOOL_CALL_VALIDATION] Invalid JSON in tool call arguments for ${toolCall.function.name}:`, {
+                                error: error instanceof Error ? error.message : String(error),
+                                arguments_length: toolCall.function.arguments.length,
+                                arguments_content: toolCall.function.arguments,
+                                arguments_hex: Buffer.from(toolCall.function.arguments).toString('hex')
+                            });
                         }
                     }
                 }
-
-                // Filter invalid tool calls (must have name)
-                const dropped = toolCalls.filter((tc) => !tc.function.name || tc.function.name.trim() === '');
-                if (dropped.length) {
-                    console.warn(
-                        `[TOOL_CALL_WARNING] Dropping ${dropped.length} streamed tool_call(s) without function name`,
-                        dropped,
-                    );
-                }
-                toolCalls = toolCalls.filter((tc) => tc.function.name && tc.function.name.trim() !== '');
+                // Do not drop tool calls without id; we used a synthetic id and will update if a real id arrives in later deltas
             } else {
                 // Handle the case where stream was requested but a non-stream response was received
-                console.error('Expected a stream response but received a non-stream response.');
-                content = (response as any)?.output_text ?? '';
-                toolCalls = extractToolCallsFromResponse(response);
+                console.error('Expected a stream response but received a ChatCompletion object.');
+                // Properly extract both content and tool calls from non-stream response
+                const completion = response as OpenAI.ChatCompletion;
+                const message = completion.choices[0]?.message;
+                if (message) {
+                    content = message.content || '';
+                    toolCalls = (message.tool_calls as ChatCompletionMessageFunctionToolCall[]) || [];
+                }
             }
         } else {
-            // If not streaming, get the full response content (response is Responses object)
-            content = (response as any)?.output_text ?? '';
-            const allToolCalls = extractToolCallsFromResponse(response);
-            const droppedNonStream = allToolCalls.filter((tc) => !tc.function.name || tc.function.name.trim() === '');
+            // If not streaming, get the full response content (response is ChatCompletion)
+            content = (response as OpenAI.ChatCompletion).choices[0]?.message?.content || '';
+            const allToolCalls = ((response as OpenAI.ChatCompletion).choices[0]?.message?.tool_calls as ChatCompletionMessageFunctionToolCall[] || []);
+            const droppedNonStream = allToolCalls.filter(tc => !tc.function.name || tc.function.name.trim() === '');
             if (droppedNonStream.length) {
-                console.warn(
-                    `[TOOL_CALL_WARNING] Dropping ${droppedNonStream.length} non-stream tool_call(s) without function name`,
-                    droppedNonStream,
-                );
+                console.warn(`[TOOL_CALL_WARNING] Dropping ${droppedNonStream.length} non-stream tool_call(s) without function name`, droppedNonStream);
             }
-            toolCalls = allToolCalls.filter((tc) => tc.function.name && tc.function.name.trim() !== '');
-
-            // Token usage (Responses shape may differ by provider)
-            const totalTokens = (response as any)?.usage?.total_tokens ?? (response as any)?.usage?.output_tokens;
+            toolCalls = allToolCalls.filter(tc => tc.function.name && tc.function.name.trim() !== '');
+            // Also print the total number of tokens used in the prompt
+            const totalTokens = (response as OpenAI.ChatCompletion).usage?.total_tokens;
             console.log(`Total tokens used in prompt: ${totalTokens}`);
         }
 
-        const assistantMessage = { role: 'assistant' as MessageRole, content, tool_calls: toolCalls };
+        const assistantMessage = { role: "assistant" as MessageRole, content, tool_calls: toolCalls };
 
         if (onAssistantMessage) {
             await onAssistantMessage(assistantMessage);
         }
 
         /*
-         * Handle tool calls
-         */
-        if (!content && !stream && !toolCalls.length) {
-            console.warn('No content received from OpenAI', JSON.stringify(response, null, 2));
-            return { string: '', toolCallContext };
-        }
+        * Handle tool calls
+        */
 
+        if (!content && !stream && !toolCalls.length) {
+            // // Only error if not streaming and no content
+            // console.error('No content received from OpenAI', JSON.stringify(response, null, 2));
+            // throw new Error('No content received from OpenAI');
+            console.warn('No content received from OpenAI', JSON.stringify(response, null, 2));
+            return { string: "", toolCallContext };
+        }
         let executedToolCalls: ToolCallResult[] = [];
         if (tools) {
+            // console.log(`Tool calls:`, JSON.stringify(toolCalls, null, 2), 'definition:', JSON.stringify(tools, null, 2));
             try {
                 executedToolCalls = await executeToolCalls(toolCalls, tools);
             } catch (error) {
-                console.error(
-                    `Tool execution failed${toolCalls.length > 0 ? ` for ${toolCalls[0].function.name}` : ''}:`,
-                    error,
-                );
+                console.error(`Tool execution failed${toolCalls.length > 0 ? ` for ${toolCalls[0].function.name}` : ''}:`, error);
                 // Check if error is an abort error
                 if (error instanceof AbortError) {
                     console.warn(`Tool call was aborted, ending tool call chain with the latest tool call result`);
 
-                    const newToolCallContext = updateToolCallContext(
-                        toolCallContext,
-                        assistantMessage,
-                        executedToolCalls,
-                        completionConfig?.detector,
-                    );
+                    const newToolCallContext = updateToolCallContext(toolCallContext, assistantMessage, executedToolCalls, completionConfig?.detector);
                     return { string: content, toolCallContext: newToolCallContext };
                 }
                 // Otherwise, continue
@@ -928,17 +858,13 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
         }
 
         /*
-         * Handle tool call results
-         */
+        * Handle tool call results
+        */
+
         if (executedToolCalls.length) {
             console.log(`Tool calls executed:`, JSON.stringify(executedToolCalls, null, 2));
 
-            const newToolCallContext = updateToolCallContext(
-                toolCallContext,
-                assistantMessage,
-                executedToolCalls,
-                completionConfig?.detector,
-            );
+            const newToolCallContext = updateToolCallContext(toolCallContext, assistantMessage, executedToolCalls, completionConfig?.detector);
 
             // Stop recursion if completion signal detected
             if (newToolCallContext.completionSignal?.signaled) {
@@ -947,67 +873,62 @@ export async function infer<OutputSchema extends z.AnyZodObject>(
                 if (schema && schemaName) {
                     throw new AbortError(
                         `Completion signaled: ${newToolCallContext.completionSignal.summary || 'Task complete'}`,
-                        newToolCallContext,
+                        newToolCallContext
                     );
                 }
                 return {
                     string: content || newToolCallContext.completionSignal.summary || 'Task complete',
-                    toolCallContext: newToolCallContext,
+                    toolCallContext: newToolCallContext
                 };
             }
 
             // Filter completion tools from recursion trigger
-            const executedCallsWithResults = executedToolCalls.filter(
-                (result) => result.result !== undefined && !(completionConfig?.detector?.isCompletionTool(result.name)),
+            const executedCallsWithResults = executedToolCalls.filter(result =>
+                result.result !== undefined &&
+                !(completionConfig?.detector?.isCompletionTool(result.name))
             );
             console.log(`${actionKey}: Tool depth ${newToolCallContext.depth}/${getMaxToolCallingDepth(actionKey)}`);
 
             if (executedCallsWithResults.length) {
                 if (schema && schemaName) {
-                    const output = await infer<OutputSchema>(
-                        {
-                            env,
-                            metadata,
-                            messages,
-                            schema,
-                            schemaName,
-                            format,
-                            formatOptions,
-                            actionKey,
-                            modelName,
-                            maxTokens,
-                            stream,
-                            tools,
-                            reasoning_effort,
-                            temperature,
-                            frequency_penalty,
-                            abortSignal,
-                            onAssistantMessage,
-                            completionConfig,
-                        },
-                        newToolCallContext,
-                    );
+                    const output = await infer<OutputSchema>({
+                        env,
+                        metadata,
+                        messages,
+                        schema,
+                        schemaName,
+                        format,
+                        formatOptions,
+                        actionKey,
+                        modelName,
+                        maxTokens,
+                        stream,
+                        tools,
+                        reasoning_effort,
+                        temperature,
+                        frequency_penalty,
+                        abortSignal,
+                        onAssistantMessage,
+                        completionConfig,
+                    }, newToolCallContext);
                     return output;
                 } else {
-                    const output = await infer(
-                        {
-                            env,
-                            metadata,
-                            messages,
-                            modelName,
-                            maxTokens,
-                            actionKey,
-                            stream,
-                            tools,
-                            reasoning_effort,
-                            temperature,
-                            frequency_penalty,
-                            abortSignal,
-                            onAssistantMessage,
-                            completionConfig,
-                        },
-                        newToolCallContext,
-                    );
+                    const output = await infer({
+                        env,
+                        metadata,
+                        messages,
+                        modelName,
+                        maxTokens,
+                        actionKey,
+                        stream,
+                        tools,
+                        reasoning_effort,
+                        temperature,
+                        frequency_penalty,
+                        abortSignal,
+                        onAssistantMessage,
+                        completionConfig,
+                    }, newToolCallContext);
                     return output;
                 }
             } else {
