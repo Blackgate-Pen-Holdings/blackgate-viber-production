@@ -19,10 +19,10 @@ const COMMON_AGENT_CONFIGS = {
         temperature: 0.2,
     },
     realtimeCodeFixer: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         reasoning_effort: 'medium',
         max_tokens: 6000,
-        fallbackModel: AIModels.OPENAI_5_CODEX,
+        fallbackModel: AIModels.OPENAI_5_2_PRO,
         temperature: 0.1,
     },
     fastCodeFixer: {
@@ -66,10 +66,10 @@ const PLATFORM_AGENT_CONFIG: AgentConfig = {
         temperature: 0.7,
     },
     projectSetup: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         reasoning_effort: 'medium',
         max_tokens: 12000,
-        fallbackModel: AIModels.OPENAI_5_CODEX,
+        fallbackModel: AIModels.OPENAI_5_2_PRO,
         temperature: 0.2,
     },
     phaseGeneration: {
@@ -80,14 +80,14 @@ const PLATFORM_AGENT_CONFIG: AgentConfig = {
         temperature: 0.8,
     },
     firstPhaseImplementation: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         reasoning_effort: 'high',
         max_tokens: 16000,
         fallbackModel: AIModels.OPENAI_5_3_CODEX,
         temperature: 0.15,
     },
     phaseImplementation: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         reasoning_effort: 'high',
         max_tokens: 16000,
         fallbackModel: AIModels.OPENAI_5_3_CODEX,
@@ -111,7 +111,7 @@ const PLATFORM_AGENT_CONFIG: AgentConfig = {
         name: AIModels.OPENAI_5_3_CODEX,
         reasoning_effort: 'medium',
         max_tokens: 24000,
-        fallbackModel: AIModels.OPENAI_5_2_CODEX,
+        fallbackModel: AIModels.OPENAI_5_2_PRO,
         temperature: 0.1,
     },
     agenticProjectBuilder: {
@@ -144,7 +144,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
         temperature: 0.7,
       },
     projectSetup: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         ...SHARED_IMPLEMENTATION_CONFIG,
     },
     phaseGeneration: {
@@ -152,11 +152,11 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
         ...SHARED_IMPLEMENTATION_CONFIG,
     },
     firstPhaseImplementation: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         ...SHARED_IMPLEMENTATION_CONFIG,
     },
     phaseImplementation: {
-        name: AIModels.OPENAI_5_2_CODEX,
+        name: AIModels.OPENAI_5_2_PRO,
         ...SHARED_IMPLEMENTATION_CONFIG,
     },
     conversationalResponse: {
@@ -177,7 +177,7 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
         name: AIModels.OPENAI_5_3_CODEX,
         reasoning_effort: 'medium',
         max_tokens: 24000,
-        fallbackModel: AIModels.OPENAI_5_2_CODEX,
+        fallbackModel: AIModels.OPENAI_5_2_PRO,
         temperature: 0.1,
       },
     agenticProjectBuilder: {
@@ -211,7 +211,7 @@ export const AGENT_CONSTRAINTS: Map<AgentActionKey, AgentConstraintConfig> = new
 		enabled: true,
 	}],
 	['projectSetup', {
-        allowedModels: new Set([...RegularModels, AIModels.OPENAI_5_2_CODEX]),
+        allowedModels: new Set([...RegularModels, AIModels.OPENAI_5_2_PRO]),
 		enabled: true,
 	}],
 	['conversationalResponse', {
