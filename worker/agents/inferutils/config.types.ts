@@ -115,50 +115,52 @@ const MODELS_MASTER = {
         }
     },
     // --- Anthropic Models ---
-    CLAUDE_3_7_SONNET_20250219: {
-        id: 'anthropic/claude-3-7-sonnet-20250219',
+
+    // --- Claude Legacy Model --- 
+    // CLAUDE_3_7_SONNET_20250219: {
+    //     id: 'anthropic/claude-3-7-sonnet-20250219',
+    //     config: {
+    //         name: 'Claude 3.7 Sonnet',
+    //         size: ModelSize.LARGE,
+    //         provider: 'anthropic',
+    //         creditCost: 12, // $3.00
+    //         contextSize: 200000, // 200K Context
+    //     }
+    // },
+    // CLAUDE_4_SONNET: {
+    //     id: 'anthropic/claude-sonnet-4-20250514',
+    //     config: {
+    //         name: 'Claude 4 Sonnet',
+    //         size: ModelSize.LARGE,
+    //         provider: 'anthropic',
+    //         creditCost: 12, // $3.00
+    //         contextSize: 200000, // 200K Context
+    //     }
+    // },
+    CLAUDE_SONNET_4_6: {
+        id: 'anthropic/claude-sonnet-4-6',
         config: {
-            name: 'Claude 3.7 Sonnet',
+            name: 'Claude Sonnet 4.6',
             size: ModelSize.LARGE,
             provider: 'anthropic',
             creditCost: 12, // $3.00
             contextSize: 200000, // 200K Context
         }
     },
-    CLAUDE_4_SONNET: {
-        id: 'anthropic/claude-sonnet-4-20250514',
+    CLAUDE_OPUS_4_6: {
+        id: 'anthropic/claude-opus-4-6',
         config: {
-            name: 'Claude 4 Sonnet',
-            size: ModelSize.LARGE,
-            provider: 'anthropic',
-            creditCost: 12, // $3.00
-            contextSize: 200000, // 200K Context
-        }
-    },
-    CLAUDE_4_5_SONNET: {
-        id: 'anthropic/claude-sonnet-4-5',
-        config: {
-            name: 'Claude 4.5 Sonnet',
-            size: ModelSize.LARGE,
-            provider: 'anthropic',
-            creditCost: 12, // $3.00
-            contextSize: 200000, // 200K Context
-        }
-    },
-    CLAUDE_4_5_OPUS: {
-        id: 'anthropic/claude-opus-4-5',
-        config: {
-            name: 'Claude 4.5 Opus',
+            name: 'Claude Opus 4.6',
             size: ModelSize.LARGE,
             provider: 'anthropic',
             creditCost: 20, // $5.00
             contextSize: 200000, // 200K Context
         }
     },
-    CLAUDE_4_5_HAIKU: {
+    CLAUDE_HAIKU_4_5: {
         id: 'anthropic/claude-haiku-4-5',
         config: {
-            name: 'Claude 4.5 Haiku',
+            name: 'Claude Haiku 4.5',
             size: ModelSize.REGULAR,
             provider: 'anthropic',
             creditCost: 4, // ~$1

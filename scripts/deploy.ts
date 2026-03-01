@@ -985,7 +985,7 @@ class CloudflareDeploymentManager {
 	private updateWranglerForCustomDomain(
 		content: string, 
 		routes: Array<{ pattern: string; custom_domain: boolean; zone_id?: string; zone_name?: string }>,
-		preserveExistingFlags: boolean = false
+		preserveExistingFlags: boolean = true
 	): string {
 		let updatedContent = content;
 
